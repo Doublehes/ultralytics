@@ -1,0 +1,19 @@
+
+# Train/val/test sets as 1) dir: path/to/imgs, 2) file: path/to/imgs.txt, or 3) list: [path/to/imgs1, path/to/imgs2, ..]
+path: /media/double/Data/datasets/nuImages
+train: 
+  - yolo_dataset_train/images
+val: 
+  - yolo_dataset_val/images
+test:
+
+# Classes
+names:
+  0: car
+  1: truck
+  2: bus
+  3: bicycle
+  4: motorcycle
+  5: other_vehicle
+  6: pedestrian
+  
