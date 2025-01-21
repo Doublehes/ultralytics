@@ -228,7 +228,8 @@ class Results(SimpleClass):
     """
 
     def __init__(
-        self, orig_img, path, names, boxes=None, masks=None, probs=None, keypoints=None, obb=None, speed=None
+        self, orig_img, path, names, boxes=None, masks=None, probs=None, keypoints=None, obb=None, speed=None,
+        result_3d = None
     ) -> None:
         """
         Initialize the Results class for storing and manipulating inference results.
@@ -268,6 +269,7 @@ class Results(SimpleClass):
         self.names = names
         self.path = path
         self.save_dir = None
+        self.result_3d = result_3d
         self._keys = "boxes", "masks", "probs", "keypoints", "obb"
 
     def __getitem__(self, idx):

@@ -212,6 +212,62 @@ def visualize_image_annotations(image_path, txt_path, label_map):
         ax.text(x, y - 5, label_map[label], color="white" if luminance < 0.5 else "black", backgroundcolor=color)
     ax.imshow(img)
     plt.show()
+def verify_image_label_det3d(args):
+    """Verify one image-label pair."""
+    im_file, lb_file, prefix, num_cls = args
+    # Number (missing, found, empty, corrupt), message, segments, keypoints
+    nm, nf, ne, nc, msg,  = 0, 0, 0, 0, ""
+    try:
+        # Verify images
+        im = Image.open(im_file)
+        im.verify()  # PIL verify
+        shape = exif_size(im)  # image size
+        shape = (shape[1], shape[0])  # hw
+        assert (shape[0] > 9) & (shape[1] > 9), f"image size {shape} <10 pixels"
+        assert im.format.lower() in IMG_FORMATS, f"invalid image format {im.format}. {FORMATS_HELP_MSG}"
+        if im.format.lower() in {"jpg", "jpeg"}:
+            with open(im_file, "rb") as f:
+                f.seek(-2, 2)
+                if f.read() != b"\xff\xd9":  # corrupt JPEG
+                    ImageOps.exif_transpose(Image.open(im_file)).save(im_file, "JPEG", subsampling=0, quality=100)
+                    msg = f"{prefix}WARNING ⚠️ {im_file}: corrupt JPEG restored and saved"
+
+        # Verify labels
+        zero_label = np.zeros((1, 5 + 3 + 3 + 1 + 1), dtype=np.float32)
+        if os.path.isfile(lb_file):
+            nf = 1  # label found
+            with open(lb_file) as f:
+                lb = [x.split() for x in f.read().strip().splitlines() if len(x)]
+                lb = np.array(lb, dtype=np.float32)
+            nl = len(lb)
+            if nl:
+                points = lb[:, 1:5] # 2d xywh
+                assert points.max() <= 1, f"non-normalized or out of bounds coordinates {points[points > 1]}"
+                assert points.min() >= 0, f"negative label values {points[points < 0]}"
+
+                # All labels
+                max_cls = lb[:, 0].max()  # max label count
+                assert max_cls <= num_cls, (
+                    f"Label class {int(max_cls)} exceeds dataset class count {num_cls}. "
+                    f"Possible class labels are 0-{num_cls - 1}"
+                )
+                _, i = np.unique(lb, axis=0, return_index=True)
+                if len(i) < nl:  # duplicate row check
+                    lb = lb[i]  # remove duplicates
+                    msg = f"{prefix}WARNING ⚠️ {im_file}: {nl - len(i)} duplicate labels removed"
+            else:
+                ne = 1  # label empty
+                lb = zero_label
+        else:
+            nm = 1  # label missing
+            lb = zero_label
+        lb_2d = lb[:, :5] # [cls, xywh]
+        lb_3d = lb[:, 5:12] # [cx, cy, cz, whl, yaw]
+        return im_file, lb_2d, shape, lb_3d, nm, nf, ne, nc, msg
+    except Exception as e:
+        nc = 1
+        msg = f"{prefix}WARNING ⚠️ {im_file}: ignoring corrupt image/label: {e}"
+        return [None, None, None, None, nm, nf, ne, nc, msg]
 
 
 def polygon2mask(imgsz, polygons, color=1, downsample_ratio=1):

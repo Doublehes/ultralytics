@@ -2147,6 +2147,12 @@ class Format:
         return masks, instances, cls
 
 
+class FormatDet3d(Format):
+    def __call__(self, labels):
+        labels["xyz_3d"] = torch.from_numpy(labels.pop("xyz_3d"))
+        return super().__call__(labels)
+
+
 class RandomLoadText:
     """
     Randomly samples positive and negative texts and updates class indices accordingly.
