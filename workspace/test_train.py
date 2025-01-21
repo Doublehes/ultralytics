@@ -6,9 +6,9 @@ resume = False
 
 # data_yaml = "./workspace/config/shape.yaml"
 # data_yaml = "./workspace/config/nuimage.yaml"
-data_yaml = "./workspace/config/nuscenese-2d.yaml"
+# data_yaml = "./workspace/config/nuscenese-2d.yaml"
 # data_yaml = "VOC.yaml"
-# data_yaml = "dota8.yaml"
+data_yaml = "coco8.yaml"
 
 # cfg_yamf = "./workspace/config/dense5.yaml"
 cfg_yamf = "yolo11n.yaml"
@@ -23,9 +23,9 @@ model_name = cfg_yamf.split('/')[-1].split('.')[0]
 project = f"../runs/train_{data_name}"
 if test:
     project = project + "_test"
-imgsz = 960
-batch = 8
-epochs = 100
+imgsz = 320
+batch = 2
+epochs = 10
 run_name = f"{model_name}_{data_name}_bs{batch}_ep{epochs}_imgsz{imgsz}_id"
 
 if resume:

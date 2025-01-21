@@ -15,7 +15,7 @@ from .conv import Conv, DWConv
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
 from .utils import bias_init_with_prob, linear_init
 
-__all__ = "Detect", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect"
+__all__ = "Detect", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect", "Detect3d"
 
 
 class Detect(nn.Module):
@@ -170,6 +170,27 @@ class Detect(nn.Module):
         scores, index = scores.flatten(1).topk(min(max_det, anchors))
         i = torch.arange(batch_size)[..., None]  # batch indices
         return torch.cat([boxes[i, index // nc], scores[..., None], (index % nc)[..., None].float()], dim=-1)
+
+
+class Detect3d(Detect):
+    """YOLO Detect head for detection models."""
+    def __init__(self, nc=80, ch=()):
+        """Initializes the YOLO detection layer with specified number of classes and channels."""
+        super().__init__(nc, ch)
+        c_xy = max(ch[0] // 4, 2)
+        self.cv_xy = nn.ModuleList(
+            nn.Sequential(Conv(x, c_xy, 3), Conv(c_xy, c_xy, 3), nn.Conv2d(c_xy, 2, 1)) for x in ch
+        )
+    
+    def forward(self, x):
+        """Concatenates and returns predicted bounding boxes and class probabilities."""        
+        bs = x[0].shape[0]  # batch size
+        xy = torch.cat([self.cv_xy[i](x[i]).view(bs, 2, -1) for i in range(self.nl)], 2)  # xy
+        forward_2d = super().forward(x)
+        if self.training:
+            return forward_2d, xy
+        
+        return forward_2d, xy
 
 
 class Segment(Detect):

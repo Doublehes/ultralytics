@@ -126,11 +126,11 @@ def main(pkl_path, save_dir, sample_num=100, only_show=True, only_label_2d=True)
 if __name__ == '__main__':
     only_show = False
     train_pkl = "/media/double/Data/datasets/nuScenese/nuscenes_infos_train.pkl"
-    train_dir = "yolo_dataset/train"
-    main(train_pkl, train_dir, 2000, only_show=only_show)
+    train_dir = "yolo_dataset/train3d"
+    main(train_pkl, train_dir, 2000, only_show=only_show, only_label_2d=False)
 
     val_pkl = "/media/double/Data/datasets/nuScenese/nuscenes_infos_val.pkl"
-    val_dir = "yolo_dataset/val"
-    main(val_pkl, val_dir, 500, only_show=only_show)
+    val_dir = "yolo_dataset/val3d"
+    main(val_pkl, val_dir, 500, only_show=only_show, only_label_2d=False)
     pass
 
