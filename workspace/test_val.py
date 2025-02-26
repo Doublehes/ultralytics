@@ -11,5 +11,5 @@ from ultralytics import YOLO
 # res = model.benchmark(data="VOC.yaml", imgsz=640)
 
 
-model = YOLO("runs/train_nuscenese-3d_test/yolo11n-3d_nuscenese-3d_bs8_ep100_sz960p/weights/last.pt", task="detect3d")
+model = YOLO("runs/train_nuscenese-3d_test/yolo11n-3d_nuscenese-3d_bs8_ep100_sz960p_rect_wx0.2_wy0.5/weights/best.pt", task="detect3d")
 res = model.val(data="workspace/config/nuscenese-3d.yaml", imgsz=960)

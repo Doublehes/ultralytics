@@ -313,7 +313,7 @@ class Detection3DLoss:
 
     def __call__(self, preds, batch):
         """Calculate the sum of the loss for box, cls and dfl multiplied by batch size."""
-        loss = torch.zeros(4, device=self.device)  # box, cls, dfl, xy_3d
+        loss = torch.zeros(5, device=self.device)  # box, cls, dfl, x_3d, y_3d
         # import pudb;pudb.set_trace()
         pred_2d, pred_xy3d = preds[0], preds[1]
         feats = pred_2d[1] if isinstance(pred_2d, tuple) else pred_2d
@@ -368,9 +368,11 @@ class Detection3DLoss:
                 pred_distri, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask
             )
             loss_3d_xy = F.smooth_l1_loss(pred_xy3d[fg_mask], target_3ds["xyz_3d"][fg_mask][..., :2], reduction="none")
-            loss_3d_xy = loss_3d_xy.sum() / target_scores_sum
-            loss_3d_xy *= 0.1
-            loss[3] = loss_3d_xy
+            # import pudb;pudb.set_trace()
+            loss_3d_xy = loss_3d_xy.sum(axis=0) / target_scores_sum
+            # loss_3d_xy *= 0.1
+            loss[3] = loss_3d_xy[0] * 0.2
+            loss[4] = loss_3d_xy[1] * 0.5
 
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.cls  # cls gain
