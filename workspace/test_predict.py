@@ -24,35 +24,53 @@ def screen_capture():
     return img
 
 
-def image_iterator(img_dir):
-    for img_path in sorted(os.listdir(img_dir)):
-        img_path = os.path.join(img_dir, img_path)
+def data_iterator(data_dir, with_label=True):
+    img_dir = os.path.join(data_dir, "images")
+    for img_name in sorted(os.listdir(img_dir)):
+        img_path = os.path.join(img_dir, img_name)
         img = cv2.imread(img_path)
-        yield img
+        if not with_label:
+            yield img, None
+            continue
+        label_path = img_path.replace("images", "labels").replace("jpg", "txt")
+        label = np.loadtxt(label_path)
+        if len(label) == 0:
+            label = np.array([])
+        elif len(label.shape) == 1:
+            label = label[np.newaxis, :]
+
+        yield img, label
 
 
 if __name__ == "__main__":
-    model = YOLO("./models/yolo11x.pt", task="detect")
+    model = YOLO("runs/train_nuimage/yolo11n_nuimage_bs8_ep100_sz960p/weights/best.pt", task="detect")
 
-    img_dir = "/home/double/Documents/datasets/nuImages/samples/CAM_FRONT"
-    img_iterator = image_iterator(img_dir)
+    data_dir = "/media/double/Data/datasets/nuImages/yolo_dataset_train"
+    img_iterator = data_iterator(data_dir)
     while True:
         t1 = time.time()
 
         # img = screen_capture()
 
-        img = next(img_iterator)
+        img, label = next(img_iterator)
         
         result = model.predict(img, verbose=True, imgsz=960)[0]
         img = result.plot()
 
+        for box in label:
+            cls, x, y, w, h = box
+            x, y, w, h = x * 1600, y * 900, w * 1600, h * 900
+            l, t, r, b = x - w / 2, y - h / 2, x + w / 2, y + h / 2
+            cv2.rectangle(img, (int(l), int(t)), (int(r), int(b)), (0, 255, 0), 2)
         cv2.imshow("result", img)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        # if cv2.waitKey(1) & 0xFF == ord('q'):
+        #     break
+
+        cv2.waitKey(0)
 
         t2 = time.time()
-        time.sleep(max(0, 1.0 - (t2 - t1)))
+        time.sleep(max(0, 2.0 - (t2 - t1)))
 
     # 释放资源
     cv2.destroyAllWindows()

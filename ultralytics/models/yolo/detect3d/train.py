@@ -92,7 +92,7 @@ class Detection3DTrainer(BaseTrainer):
 
     def get_validator(self):
         """Returns a DetectionValidator for YOLO model validation."""
-        self.loss_names = "box_loss", "cls_loss", "dfl_loss", "xy_loss"
+        self.loss_names = "box_loss", "cls_loss", "dfl_loss", "x_loss", "y_loss"
         return yolo.detect3d.Detection3DValidator(
             self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks
         )
