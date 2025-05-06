@@ -250,8 +250,8 @@ def save_annos_yolo(annos, width, height, save_path):
 
 if __name__ == "__main__":
     train = False
-    generate_num = 1000
-    img_id = 2001
+    generate_num = 2000 if train else 1000
+    img_id = 1 if train else 2001
 
     save_dir = "/home/double/Documents/datasets/shape/" + ("train" if train else "val")
     img_dir = os.path.join(save_dir, "images")
