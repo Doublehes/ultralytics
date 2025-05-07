@@ -59,6 +59,7 @@ from ultralytics.nn.modules import (
     RepVGGDW,
     ResNetLayer,
     RTDETRDecoder,
+    DETRDecoder,
     SCDown,
     Segment,
     TorchVision,
@@ -567,6 +568,107 @@ class ClassificationModel(BaseModel):
     def init_criterion(self):
         """Initialize the loss criterion for the ClassificationModel."""
         return v8ClassificationLoss()
+
+
+class DETRDetectionModel(DetectionModel):
+    """
+    RTDETR (Real-time DEtection and Tracking using Transformers) Detection Model class.
+
+    This class is responsible for constructing the RTDETR architecture, defining loss functions, and facilitating both
+    the training and inference processes. RTDETR is an object detection and tracking model that extends from the
+    DetectionModel base class.
+
+    Methods:
+        init_criterion: Initializes the criterion used for loss calculation.
+        loss: Computes and returns the loss during training.
+        predict: Performs a forward pass through the network and returns the output.
+    """
+
+    def __init__(self, cfg="rtdetr-l.yaml", ch=3, nc=None, verbose=True):
+        """
+        Initialize the RTDETRDetectionModel.
+
+        Args:
+            cfg (str): Configuration file name or path.
+            ch (int): Number of input channels.
+            nc (int, optional): Number of classes. Defaults to None.
+            verbose (bool, optional): Print additional information during initialization. Defaults to True.
+        """
+        super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
+
+    def init_criterion(self):
+        """Initialize the loss criterion for the RTDETRDetectionModel."""
+        from ultralytics.models.utils.loss import DETRLoss
+
+        return DETRLoss(nc=self.nc, use_vfl=True)
+
+    def loss(self, batch, preds=None):
+        """
+        Compute the loss for the given batch of data.
+
+        Args:
+            batch (dict): Dictionary containing image and label data.
+            preds (torch.Tensor, optional): Precomputed model predictions. Defaults to None.
+
+        Returns:
+            (tuple): A tuple containing the total loss and main three losses in a tensor.
+        """
+        if not hasattr(self, "criterion"):
+            self.criterion = self.init_criterion()
+
+        img = batch["img"]
+        # NOTE: preprocess gt_bbox and gt_labels to list.
+        bs = len(img)
+        batch_idx = batch["batch_idx"]
+        gt_groups = [(batch_idx == i).sum().item() for i in range(bs)]
+        targets = {
+            "cls": batch["cls"].to(img.device, dtype=torch.long).view(-1),
+            "bboxes": batch["bboxes"].to(device=img.device),
+            "batch_idx": batch_idx.to(img.device, dtype=torch.long).view(-1),
+            "gt_groups": gt_groups,
+        }
+
+        preds = self.predict(img, batch=targets) if preds is None else preds
+        dec_bboxes, dec_scores = preds if self.training else preds[1]
+
+        loss = self.criterion(dec_bboxes, dec_scores, targets)
+        # NOTE: There are like 12 losses in RTDETR, backward with all losses but only show the main three losses.
+        return sum(loss.values()), torch.as_tensor(
+            [loss[k].detach() for k in ["loss_giou", "loss_class", "loss_bbox"]], device=img.device
+        )
+
+    def predict(self, x, profile=False, visualize=False, batch=None, augment=False, embed=None):
+        """
+        Perform a forward pass through the model.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+            profile (bool, optional): If True, profile the computation time for each layer. Defaults to False.
+            visualize (bool, optional): If True, save feature maps for visualization. Defaults to False.
+            batch (dict, optional): Ground truth data for evaluation. Defaults to None.
+            augment (bool, optional): If True, perform data augmentation during inference. Defaults to False.
+            embed (list, optional): A list of feature vectors/embeddings to return.
+
+        Returns:
+            (torch.Tensor): Model's output tensor.
+        """
+        y, dt, embeddings = [], [], []  # outputs
+        for m in self.model[:-1]:  # except the head part
+            if m.f != -1:  # if not from previous layer
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+            if profile:
+                self._profile_one_layer(m, x, dt)
+            x = m(x)  # run
+            y.append(x if m.i in self.save else None)  # save output
+            if visualize:
+                feature_visualization(x, m.type, m.i, save_dir=visualize)
+            if embed and m.i in embed:
+                embeddings.append(torch.nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
+                if m.i == max(embed):
+                    return torch.unbind(torch.cat(embeddings, 1), dim=0)
+        head = self.model[-1]
+        x = head([y[j] for j in head.f], batch)  # head inference
+        return x
 
 
 class RTDETRDetectionModel(DetectionModel):
@@ -1150,6 +1252,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             if m in {Detect, Segment, Pose, OBB}:
                 m.legacy = legacy
         elif m is RTDETRDecoder:  # special case, channels arg must be passed in index 1
+            args.insert(1, [ch[x] for x in f])
+        elif m is DETRDecoder:  # special case, channels arg must be passed in index 1
             args.insert(1, [ch[x] for x in f])
         elif m is CBLinear:
             c2 = args[0]

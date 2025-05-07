@@ -15,7 +15,7 @@ from .conv import Conv, DWConv
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
 from .utils import bias_init_with_prob, linear_init
 
-__all__ = "Detect", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect", "Detect3d"
+__all__ = "Detect", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect", "Detect3d", "DETRDecoder"
 
 
 class Detect(nn.Module):
@@ -377,6 +377,232 @@ class WorldDetect(Detect):
         for a, b, s in zip(m.cv2, m.cv3, m.stride):  # from
             a[-1].bias.data[:] = 1.0  # box
             # b[-1].bias.data[:] = math.log(5 / m.nc / (640 / s) ** 2)  # cls (.01 objects, 80 classes, 640 img)
+
+
+
+class DETRTransformerDecoderLayer(nn.Module):
+    def __init__(self, d_model=256, n_heads=8, d_ffn=1024, dropout=0.0, act=nn.ReLU(), n_levels=4, n_points=4):
+        """Initialize the DeformableTransformerDecoderLayer with the given parameters."""
+        super().__init__()
+
+        # Self attention
+        self.self_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout)
+        self.dropout1 = nn.Dropout(dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+
+        # Cross attention
+        self.cross_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.norm2 = nn.LayerNorm(d_model)
+
+        # FFN
+        self.linear1 = nn.Linear(d_model, d_ffn)
+        self.act = act
+        self.dropout3 = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(d_ffn, d_model)
+        self.dropout4 = nn.Dropout(dropout)
+        self.norm3 = nn.LayerNorm(d_model)
+
+    @staticmethod
+    def with_pos_embed(tensor, pos):
+        """Add positional embeddings to the input tensor, if provided."""
+        return tensor if pos is None else tensor + pos
+
+    def forward_ffn(self, tgt):
+        """Perform forward pass through the Feed-Forward Network part of the layer."""
+        tgt2 = self.linear2(self.dropout3(self.act(self.linear1(tgt))))
+        tgt = tgt + self.dropout4(tgt2)
+        return self.norm3(tgt)
+
+    def forward(self, embed, feats, attn_mask=None, query_pos=None):
+        """Perform the forward pass through the entire decoder layer."""
+        # Self attention
+        q = k = self.with_pos_embed(embed, query_pos)
+        tgt = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), embed.transpose(0, 1), attn_mask=attn_mask
+                             )[0].transpose(0, 1)
+        embed = embed + self.dropout1(tgt)
+        embed = self.norm1(embed)
+
+        # Cross attention
+        tgt = self.cross_attn(self.with_pos_embed(embed, query_pos).transpose(0, 1), feats.transpose(0, 1), feats.transpose(0, 1))[0].transpose(0, 1)
+        embed = embed + self.dropout2(tgt)
+        embed = self.norm2(embed)
+
+        # FFN
+        return self.forward_ffn(embed)
+    
+class DETRTransformerDecoder(nn.Module):
+    def __init__(self, hidden_dim, decoder_layer, num_layers):
+        """Initialize the DeformableTransformerDecoder with the given parameters."""
+        super().__init__()
+        from .utils import _get_clones
+        self.layers = _get_clones(decoder_layer, num_layers)
+        self.num_layers = num_layers
+        self.hidden_dim = hidden_dim
+
+    def forward(
+        self,
+        embed,  # decoder embeddings
+        feats,  # image features
+        bbox_head,
+        score_head
+    ):
+        """Perform the forward pass through the entire decoder."""
+        output = embed
+        dec_bboxes = []
+        dec_cls = []
+        for i, layer in enumerate(self.layers):
+            output = layer(output, feats)
+
+            bbox = bbox_head[i](output)
+            refined_bbox = torch.sigmoid(bbox)
+            dec_cls.append(score_head[i](output))
+            dec_bboxes.append(refined_bbox)
+
+        if not self.training:
+            dec_bboxes = dec_bboxes[-1:]
+            dec_cls = dec_cls[-1:]
+        return torch.stack(dec_bboxes), torch.stack(dec_cls)
+
+class DETRDecoder(nn.Module):
+    """
+    Real-Time Deformable Transformer Decoder (RTDETRDecoder) module for object detection.
+
+    This decoder module utilizes Transformer architecture along with deformable convolutions to predict bounding boxes
+    and class labels for objects in an image. It integrates features from multiple layers and runs through a series of
+    Transformer decoder layers to output the final predictions.
+    """
+
+    export = False  # export mode
+
+    def __init__(
+        self,
+        nc=80,
+        ch=(512, 1024, 2048),
+        hd=256,  # hidden dim
+        nq=300,  # num queries
+        ndp=4,  # num decoder points
+        nh=8,  # num head
+        ndl=6,  # num decoder layers
+        d_ffn=1024,  # dim of feedforward
+        dropout=0.0,
+        act=nn.ReLU(),
+        eval_idx=-1,
+        # Training args
+        nd=100,  # num denoising
+        label_noise_ratio=0.5,
+        box_noise_scale=1.0,
+        learnt_init_query=True,
+    ):
+        """
+        Initializes the RTDETRDecoder module with the given parameters.
+
+        Args:
+            nc (int): Number of classes. Default is 80.
+            ch (tuple): Channels in the backbone feature maps. Default is (512, 1024, 2048).
+            hd (int): Dimension of hidden layers. Default is 256.
+            nq (int): Number of query points. Default is 300.
+            ndp (int): Number of decoder points. Default is 4.
+            nh (int): Number of heads in multi-head attention. Default is 8.
+            ndl (int): Number of decoder layers. Default is 6.
+            d_ffn (int): Dimension of the feed-forward networks. Default is 1024.
+            dropout (float): Dropout rate. Default is 0.
+            act (nn.Module): Activation function. Default is nn.ReLU.
+            eval_idx (int): Evaluation index. Default is -1.
+            nd (int): Number of denoising. Default is 100.
+            label_noise_ratio (float): Label noise ratio. Default is 0.5.
+            box_noise_scale (float): Box noise scale. Default is 1.0.
+            learnt_init_query (bool): Whether to learn initial query embeddings. Default is False.
+        """
+        super().__init__()
+        self.hidden_dim = hd
+        self.nhead = nh
+        self.nl = len(ch)  # num level
+        self.nc = nc
+        self.num_queries = nq
+        self.num_decoder_layers = ndl
+
+        # Backbone feature projection
+        self.input_proj = nn.ModuleList(nn.Sequential(nn.Conv2d(x, hd, 1, bias=False), nn.BatchNorm2d(hd)) for x in ch)
+        # NOTE: simplified version but it's not consistent with .pt weights.
+        # self.input_proj = nn.ModuleList(Conv(x, hd, act=False) for x in ch)
+
+        # Transformer module
+        decoder_layer = DETRTransformerDecoderLayer(d_model=hd, n_heads=nh, d_ffn=d_ffn)
+        self.decoder = DETRTransformerDecoder(hd, decoder_layer, ndl)
+
+        # Decoder embedding
+        self.learnt_init_query = learnt_init_query
+        if learnt_init_query:
+            self.tgt_embed = nn.Embedding(nq, hd)
+        self.query_pos_head = MLP(4, 2 * hd, hd, num_layers=2)
+
+        # Decoder head
+        self.dec_score_head = nn.ModuleList([nn.Linear(hd, nc) for _ in range(ndl)])
+        self.dec_bbox_head = nn.ModuleList([MLP(hd, hd, 4, num_layers=3) for _ in range(ndl)])
+
+    def forward(self, x, batch=None):
+        """Runs the forward pass of the module, returning bounding box and classification scores for the input."""
+
+        # Input projection and embedding
+        feats, shapes = self._get_encoder_input(x)
+
+        bs = feats.shape[0]
+        embed = self.tgt_embed.weight.unsqueeze(0).repeat(bs, 1, 1)
+
+        # Decoder
+        dec_bboxes, dec_scores = self.decoder(
+            embed,
+            feats,
+            self.dec_bbox_head,
+            self.dec_score_head
+        )
+        x = dec_bboxes, dec_scores
+        if self.training:
+            return x
+        # (bs, 300, 4+nc)
+        y = torch.cat((dec_bboxes.squeeze(0), dec_scores.squeeze(0).sigmoid()), -1)
+        return y if self.export else (y, x)
+
+    def _generate_anchors(self, shapes, grid_size=0.05, dtype=torch.float32, device="cpu", eps=1e-2):
+        """Generates anchor bounding boxes for given shapes with specific grid size and validates them."""
+        anchors = []
+        for i, (h, w) in enumerate(shapes):
+            sy = torch.arange(end=h, dtype=dtype, device=device)
+            sx = torch.arange(end=w, dtype=dtype, device=device)
+            grid_y, grid_x = torch.meshgrid(sy, sx, indexing="ij") if TORCH_1_10 else torch.meshgrid(sy, sx)
+            grid_xy = torch.stack([grid_x, grid_y], -1)  # (h, w, 2)
+
+            valid_WH = torch.tensor([w, h], dtype=dtype, device=device)
+            grid_xy = (grid_xy.unsqueeze(0) + 0.5) / valid_WH  # (1, h, w, 2)
+            wh = torch.ones_like(grid_xy, dtype=dtype, device=device) * grid_size * (2.0**i)
+            anchors.append(torch.cat([grid_xy, wh], -1).view(-1, h * w, 4))  # (1, h*w, 4)
+
+        anchors = torch.cat(anchors, 1)  # (1, h*w*nl, 4)
+        valid_mask = ((anchors > eps) & (anchors < 1 - eps)).all(-1, keepdim=True)  # 1, h*w*nl, 1
+        anchors = torch.log(anchors / (1 - anchors))
+        anchors = anchors.masked_fill(~valid_mask, float("inf"))
+        return anchors, valid_mask
+
+    def _get_encoder_input(self, x):
+        """Processes and returns encoder inputs by getting projection features from input and concatenating them."""
+        # Get projection features
+        x = [self.input_proj[i](feat) for i, feat in enumerate(x)]
+        # Get encoder inputs
+        feats = []
+        shapes = []
+        for i, feat in enumerate(x):
+            if i == 1:
+                h, w = feat.shape[2:]
+                # [b, c, h, w] -> [b, h*w, c]
+                feats.append(feat.flatten(2).permute(0, 2, 1))
+                # [nl, 2]
+                shapes.append([h, w])
+
+        # [b, h*w, c]
+        feats = torch.cat(feats, 1)
+        return feats, shapes
+
 
 
 class RTDETRDecoder(nn.Module):

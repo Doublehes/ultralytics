@@ -77,6 +77,7 @@ from .conv import (
 )
 from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect
 from .head import Detect3d
+from .head import DETRDecoder
 from .transformer import (
     AIFI,
     MLP,
@@ -137,6 +138,7 @@ __all__ = (
     "TransformerEncoderLayer",
     "RepC3",
     "RTDETRDecoder",
+    "DETRDecoder",
     "AIFI",
     "DeformableTransformerDecoder",
     "DeformableTransformerDecoderLayer",
