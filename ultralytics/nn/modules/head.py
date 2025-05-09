@@ -379,9 +379,54 @@ class WorldDetect(Detect):
             # b[-1].bias.data[:] = math.log(5 / m.nc / (640 / s) ** 2)  # cls (.01 objects, 80 classes, 640 img)
 
 
+class DeformableAttention(nn.Module):
+    def __init__(self, d_model, n_head, n_points=4):
+        super().__init__()
+        self.n_heads = n_head
+        self.d_model = d_model
+        self.n_points = n_points
+        self.reference_points = nn.Linear(d_model, n_points * 2)
+        xavier_uniform_(self.reference_points.weight)
+        constant_(self.reference_points.bias, 0)
 
+        self.attention_weights = nn.Linear(self.d_model, 1)
+        constant_(self.attention_weights.weight.data, 0.)
+        constant_(self.attention_weights.bias.data, 0.)
+        self.feature_cov = nn.Conv2d(self.d_model, self.d_model, kernel_size=1)
+        n = self.feature_cov.kernel_size[0] * self.feature_cov.kernel_size[1] * self.d_model
+        self.feature_cov.weight.data.normal_(0, math.sqrt(2. / n))
+
+    def forward(self, qurey, enc_src, src_shapes):
+        b, N, d_model = qurey.shape
+        num_levels = len(src_shapes)
+
+        # TODO: use all level feats
+        h, w = src_shapes[0]
+        enc_src = enc_src[:, : h*w, :].permute(0, 2, 1).reshape(b, self.d_model, h, w)
+
+        refrence_points = self.reference_points(qurey).sigmoid()
+        sample_refrence_points = 2 * refrence_points - 1
+        sample_refrence_points = sample_refrence_points.view(b, N, self.n_points, 2)
+        enc_src = self.feature_cov(enc_src)
+        enc_src_list = torch.split(enc_src, int(self.d_model / self.n_heads), dim=1)
+        enc_src_sample_list = []
+        for i in range(self.n_heads):
+            featl = nn.functional.grid_sample(enc_src_list[i], sample_refrence_points, mode='nearest',
+                                                padding_mode='zeros', align_corners=False)
+            enc_src_sample_list.append(featl.unsqueeze(3))
+        enc_src_feat=torch.cat(enc_src_sample_list, dim=1).squeeze(3)
+        enc_src_feat=enc_src_feat.permute(0, 2, 3, 1)  # b, N, n_points, dim
+
+        weights = self.attention_weights(enc_src_feat)
+        attention_weights = nn.functional.softmax(weights, dim=-2)
+
+        sample_feature = attention_weights * enc_src_feat
+        sample_feature = sample_feature.sum(dim=-2)
+
+        return sample_feature
+    
 class DETRTransformerDecoderLayer(nn.Module):
-    def __init__(self, d_model=256, n_heads=8, d_ffn=1024, dropout=0.0, act=nn.ReLU(), n_levels=4, n_points=4):
+    def __init__(self, d_model=256, n_heads=8, d_ffn=1024, dropout=0.0, act=nn.ReLU(), n_points=4):
         """Initialize the DeformableTransformerDecoderLayer with the given parameters."""
         super().__init__()
 
@@ -390,8 +435,11 @@ class DETRTransformerDecoderLayer(nn.Module):
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
 
+        self.use_deformable = True
         # Cross attention
         self.cross_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout)
+        if self.use_deformable:
+            self.deformable_cross_attn = DeformableAttention(d_model, n_heads, n_points)
         self.dropout2 = nn.Dropout(dropout)
         self.norm2 = nn.LayerNorm(d_model)
 
@@ -414,7 +462,7 @@ class DETRTransformerDecoderLayer(nn.Module):
         tgt = tgt + self.dropout4(tgt2)
         return self.norm3(tgt)
 
-    def forward(self, embed, feats, attn_mask=None, query_pos=None):
+    def forward(self, embed, feats, feats_shapes, attn_mask=None, query_pos=None):
         """Perform the forward pass through the entire decoder layer."""
         # Self attention
         q = k = self.with_pos_embed(embed, query_pos)
@@ -424,7 +472,12 @@ class DETRTransformerDecoderLayer(nn.Module):
         embed = self.norm1(embed)
 
         # Cross attention
-        tgt = self.cross_attn(self.with_pos_embed(embed, query_pos).transpose(0, 1), feats.transpose(0, 1), feats.transpose(0, 1))[0].transpose(0, 1)
+
+        if self.use_deformable:
+            tgt = self.deformable_cross_attn(self.with_pos_embed(embed, query_pos), feats, feats_shapes)
+        else:
+            tgt = self.cross_attn(self.with_pos_embed(embed, query_pos).transpose(0, 1),
+                                  feats.transpose(0, 1), feats.transpose(0, 1) )[0].transpose(0, 1)
         embed = embed + self.dropout2(tgt)
         embed = self.norm2(embed)
 
@@ -444,6 +497,7 @@ class DETRTransformerDecoder(nn.Module):
         self,
         embed,  # decoder embeddings
         feats,  # image features
+        feats_shapes,
         bbox_head,
         score_head
     ):
@@ -452,12 +506,9 @@ class DETRTransformerDecoder(nn.Module):
         dec_bboxes = []
         dec_cls = []
         for i, layer in enumerate(self.layers):
-            output = layer(output, feats)
-
-            bbox = bbox_head[i](output)
-            refined_bbox = torch.sigmoid(bbox)
+            output = layer(output, feats, feats_shapes)
             dec_cls.append(score_head[i](output))
-            dec_bboxes.append(refined_bbox)
+            dec_bboxes.append(torch.sigmoid(bbox_head[i](output)))
 
         if not self.training:
             dec_bboxes = dec_bboxes[-1:]
@@ -541,6 +592,28 @@ class DETRDecoder(nn.Module):
         self.dec_score_head = nn.ModuleList([nn.Linear(hd, nc) for _ in range(ndl)])
         self.dec_bbox_head = nn.ModuleList([MLP(hd, hd, 4, num_layers=3) for _ in range(ndl)])
 
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        """Initializes or resets the parameters of the model's various components with predefined weights and biases."""
+        # Class and bbox head init
+        bias_cls = bias_init_with_prob(0.01) / 80 * self.nc
+        # NOTE: the weight initialization in `linear_init` would cause NaN when training with custom datasets.
+        # linear_init(self.enc_score_head)
+
+        for cls_, reg_ in zip(self.dec_score_head, self.dec_bbox_head):
+            # linear_init(cls_)
+            constant_(cls_.bias, bias_cls)
+            constant_(reg_.layers[-1].weight, 0.0)
+            constant_(reg_.layers[-1].bias, 0.0)
+
+        if self.learnt_init_query:
+            xavier_uniform_(self.tgt_embed.weight)
+        xavier_uniform_(self.query_pos_head.layers[0].weight)
+        xavier_uniform_(self.query_pos_head.layers[1].weight)
+        for layer in self.input_proj:
+            xavier_uniform_(layer[0].weight)
+
     def forward(self, x, batch=None):
         """Runs the forward pass of the module, returning bounding box and classification scores for the input."""
 
@@ -554,6 +627,7 @@ class DETRDecoder(nn.Module):
         dec_bboxes, dec_scores = self.decoder(
             embed,
             feats,
+            shapes,
             self.dec_bbox_head,
             self.dec_score_head
         )
@@ -563,26 +637,6 @@ class DETRDecoder(nn.Module):
         # (bs, 300, 4+nc)
         y = torch.cat((dec_bboxes.squeeze(0), dec_scores.squeeze(0).sigmoid()), -1)
         return y if self.export else (y, x)
-
-    def _generate_anchors(self, shapes, grid_size=0.05, dtype=torch.float32, device="cpu", eps=1e-2):
-        """Generates anchor bounding boxes for given shapes with specific grid size and validates them."""
-        anchors = []
-        for i, (h, w) in enumerate(shapes):
-            sy = torch.arange(end=h, dtype=dtype, device=device)
-            sx = torch.arange(end=w, dtype=dtype, device=device)
-            grid_y, grid_x = torch.meshgrid(sy, sx, indexing="ij") if TORCH_1_10 else torch.meshgrid(sy, sx)
-            grid_xy = torch.stack([grid_x, grid_y], -1)  # (h, w, 2)
-
-            valid_WH = torch.tensor([w, h], dtype=dtype, device=device)
-            grid_xy = (grid_xy.unsqueeze(0) + 0.5) / valid_WH  # (1, h, w, 2)
-            wh = torch.ones_like(grid_xy, dtype=dtype, device=device) * grid_size * (2.0**i)
-            anchors.append(torch.cat([grid_xy, wh], -1).view(-1, h * w, 4))  # (1, h*w, 4)
-
-        anchors = torch.cat(anchors, 1)  # (1, h*w*nl, 4)
-        valid_mask = ((anchors > eps) & (anchors < 1 - eps)).all(-1, keepdim=True)  # 1, h*w*nl, 1
-        anchors = torch.log(anchors / (1 - anchors))
-        anchors = anchors.masked_fill(~valid_mask, float("inf"))
-        return anchors, valid_mask
 
     def _get_encoder_input(self, x):
         """Processes and returns encoder inputs by getting projection features from input and concatenating them."""
@@ -602,7 +656,6 @@ class DETRDecoder(nn.Module):
         # [b, h*w, c]
         feats = torch.cat(feats, 1)
         return feats, shapes
-
 
 
 class RTDETRDecoder(nn.Module):
