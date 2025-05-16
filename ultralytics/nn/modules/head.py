@@ -13,7 +13,7 @@ from ultralytics.utils.tal import TORCH_1_10, dist2bbox, dist2rbox, make_anchors
 from .block import DFL, BNContrastiveHead, ContrastiveHead, Proto
 from .conv import Conv, DWConv
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
-from .utils import bias_init_with_prob, linear_init
+from .utils import bias_init_with_prob, linear_init, inverse_sigmoid
 
 __all__ = "Detect", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect", "Detect3d", "DETRDecoder"
 
@@ -426,7 +426,8 @@ class DeformableAttention(nn.Module):
         return sample_feature
     
 class DETRTransformerDecoderLayer(nn.Module):
-    def __init__(self, d_model=256, n_heads=8, d_ffn=1024, dropout=0.0, act=nn.ReLU(), n_points=4):
+    def __init__(self, d_model=256, n_heads=8, d_ffn=1024, dropout=0.0, act=nn.ReLU(), n_points=4,
+                 use_deformable=True):
         """Initialize the DeformableTransformerDecoderLayer with the given parameters."""
         super().__init__()
 
@@ -435,7 +436,7 @@ class DETRTransformerDecoderLayer(nn.Module):
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
 
-        self.use_deformable = True
+        self.use_deformable = use_deformable
         # Cross attention
         self.cross_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout)
         if self.use_deformable:
@@ -496,19 +497,33 @@ class DETRTransformerDecoder(nn.Module):
     def forward(
         self,
         embed,  # decoder embeddings
+        anchors,
         feats,  # image features
         feats_shapes,
         bbox_head,
-        score_head
+        score_head,
+        query_pos_head
     ):
         """Perform the forward pass through the entire decoder."""
         output = embed
         dec_bboxes = []
         dec_cls = []
-        for i, layer in enumerate(self.layers):
-            output = layer(output, feats, feats_shapes)
-            dec_cls.append(score_head[i](output))
-            dec_bboxes.append(torch.sigmoid(bbox_head[i](output)))
+
+        if anchors is not None:
+            refer_bbox = anchors.sigmoid()
+            for i, layer in enumerate(self.layers):
+                output = layer(output, feats, feats_shapes, query_pos=query_pos_head(refer_bbox))
+                dec_cls.append(score_head[i](output))
+                reg = bbox_head[i](output)
+                refined_bbox = torch.sigmoid(reg + inverse_sigmoid(refer_bbox))
+                dec_bboxes.append(refined_bbox)
+
+                # refer_bbox = refined_bbox.detach()
+        else:
+            for i, layer in enumerate(self.layers):
+                output = layer(output, feats, feats_shapes)
+                dec_cls.append(score_head[i](output))
+                dec_bboxes.append(torch.sigmoid(bbox_head[i](output)))
 
         if not self.training:
             dec_bboxes = dec_bboxes[-1:]
@@ -536,13 +551,8 @@ class DETRDecoder(nn.Module):
         nh=8,  # num head
         ndl=6,  # num decoder layers
         d_ffn=1024,  # dim of feedforward
-        dropout=0.0,
-        act=nn.ReLU(),
-        eval_idx=-1,
-        # Training args
-        nd=100,  # num denoising
-        label_noise_ratio=0.5,
-        box_noise_scale=1.0,
+        use_anchor=True,
+        use_deformable=True,
         learnt_init_query=True,
     ):
         """
@@ -573,13 +583,15 @@ class DETRDecoder(nn.Module):
         self.num_queries = nq
         self.num_decoder_layers = ndl
 
+        self.use_anchor = use_anchor
+
         # Backbone feature projection
         self.input_proj = nn.ModuleList(nn.Sequential(nn.Conv2d(x, hd, 1, bias=False), nn.BatchNorm2d(hd)) for x in ch)
         # NOTE: simplified version but it's not consistent with .pt weights.
         # self.input_proj = nn.ModuleList(Conv(x, hd, act=False) for x in ch)
 
         # Transformer module
-        decoder_layer = DETRTransformerDecoderLayer(d_model=hd, n_heads=nh, d_ffn=d_ffn)
+        decoder_layer = DETRTransformerDecoderLayer(d_model=hd, n_heads=nh, d_ffn=d_ffn, use_deformable=use_deformable)
         self.decoder = DETRTransformerDecoder(hd, decoder_layer, ndl)
 
         # Decoder embedding
@@ -614,22 +626,46 @@ class DETRDecoder(nn.Module):
         for layer in self.input_proj:
             xavier_uniform_(layer[0].weight)
 
+    def generate_anchors(self):
+        if not self.use_anchor:
+            return None
+        if self.num_queries not in [i * i for i in range(2, 10)]:
+            raise Exception("query num must 4, 9, 16 ...")
+
+        device = self.tgt_embed.weight.device
+        dtype = self.tgt_embed.weight.dtype
+        s = torch.linspace(0, 1, int(math.sqrt(self.num_queries)) + 2, device=device, dtype=dtype)[1:-1]
+
+        grid_y, grid_x = torch.meshgrid(s, s)
+        grid_xy = torch.stack([grid_x, grid_y], -1)  # (n, n, 2)
+        anchor_pos = grid_xy.view(-1, 2) # (num_q, 2)
+        anchor_shape = torch.ones_like((anchor_pos)) * 0.1
+        anchor = torch.concat((anchor_pos, anchor_shape), dim=1)
+        return anchor
+
     def forward(self, x, batch=None):
         """Runs the forward pass of the module, returning bounding box and classification scores for the input."""
+
+        if len(x) > 1:
+            raise Exception("now only support level=1")
 
         # Input projection and embedding
         feats, shapes = self._get_encoder_input(x)
 
         bs = feats.shape[0]
         embed = self.tgt_embed.weight.unsqueeze(0).repeat(bs, 1, 1)
+        anchors = self.generate_anchors()
+        anchors = anchors.unsqueeze(0).repeat(bs, 1, 1)
 
         # Decoder
         dec_bboxes, dec_scores = self.decoder(
             embed,
+            anchors,
             feats,
             shapes,
             self.dec_bbox_head,
-            self.dec_score_head
+            self.dec_score_head,
+            self.query_pos_head
         )
         x = dec_bboxes, dec_scores
         if self.training:
@@ -646,12 +682,11 @@ class DETRDecoder(nn.Module):
         feats = []
         shapes = []
         for i, feat in enumerate(x):
-            if i == 1:
-                h, w = feat.shape[2:]
-                # [b, c, h, w] -> [b, h*w, c]
-                feats.append(feat.flatten(2).permute(0, 2, 1))
-                # [nl, 2]
-                shapes.append([h, w])
+            h, w = feat.shape[2:]
+            # [b, c, h, w] -> [b, h*w, c]
+            feats.append(feat.flatten(2).permute(0, 2, 1))
+            # [nl, 2]
+            shapes.append([h, w])
 
         # [b, h*w, c]
         feats = torch.cat(feats, 1)
