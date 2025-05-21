@@ -598,9 +598,11 @@ class DETRDetectionModel(DetectionModel):
 
     def init_criterion(self):
         """Initialize the loss criterion for the RTDETRDetectionModel."""
-        from ultralytics.models.utils.loss import DETRLoss
-
-        return DETRLoss(nc=self.nc, use_vfl=True)
+        from ultralytics.models.utils.loss import DETRLoss, RTDETRDetectionLoss
+        loss_gain = {"class": 1, "bbox": 5, "giou": 2, "no_object": 0.1, "mask": 1, "dice": 1}
+        cost_gain={"class": 2, "bbox": 5, "giou": 2}
+        # return DETRLoss(nc=self.nc, use_vfl=True, loss_gain=loss_gain, cost_gain=cost_gain)
+        return RTDETRDetectionLoss(nc=self.nc, use_vfl=True)
 
     def loss(self, batch, preds=None):
         """
@@ -629,9 +631,17 @@ class DETRDetectionModel(DetectionModel):
         }
 
         preds = self.predict(img, batch=targets) if preds is None else preds
-        dec_bboxes, dec_scores = preds if self.training else preds[1]
+        dec_bboxes, dec_scores, dn_meta = preds if self.training else preds[1]
 
-        loss = self.criterion(dec_bboxes, dec_scores, targets)
+        if dn_meta is None:
+            dn_bboxes, dn_scores = None, None
+        else:
+            dn_bboxes, dec_bboxes = torch.split(dec_bboxes, dn_meta["dn_num_split"], dim=2)
+            dn_scores, dec_scores = torch.split(dec_scores, dn_meta["dn_num_split"], dim=2)
+        # loss = self.criterion(dec_bboxes, dec_scores, targets)
+        loss = self.criterion(
+            (dec_bboxes, dec_scores), targets, dn_bboxes=dn_bboxes, dn_scores=dn_scores, dn_meta=dn_meta
+        )
         # NOTE: There are like 12 losses in RTDETR, backward with all losses but only show the main three losses.
         return sum(loss.values()), torch.as_tensor(
             [loss[k].detach() for k in ["loss_giou", "loss_class", "loss_bbox"]], device=img.device
@@ -736,10 +746,8 @@ class RTDETRDetectionModel(DetectionModel):
         else:
             dn_bboxes, dec_bboxes = torch.split(dec_bboxes, dn_meta["dn_num_split"], dim=2)
             dn_scores, dec_scores = torch.split(dec_scores, dn_meta["dn_num_split"], dim=2)
-
         dec_bboxes = torch.cat([enc_bboxes.unsqueeze(0), dec_bboxes])  # (7, bs, 300, 4)
         dec_scores = torch.cat([enc_scores.unsqueeze(0), dec_scores])
-
         loss = self.criterion(
             (dec_bboxes, dec_scores), targets, dn_bboxes=dn_bboxes, dn_scores=dn_scores, dn_meta=dn_meta
         )

@@ -390,11 +390,15 @@ class DeformableAttention(nn.Module):
         constant_(self.reference_points.bias, 0)
 
         self.attention_weights = nn.Linear(self.d_model, 1)
-        constant_(self.attention_weights.weight.data, 0.)
+        xavier_uniform_(self.attention_weights.weight.data, 0.)
         constant_(self.attention_weights.bias.data, 0.)
         self.feature_cov = nn.Conv2d(self.d_model, self.d_model, kernel_size=1)
         n = self.feature_cov.kernel_size[0] * self.feature_cov.kernel_size[1] * self.d_model
         self.feature_cov.weight.data.normal_(0, math.sqrt(2. / n))
+
+        self.output_proj = nn.Linear(d_model, d_model)
+        xavier_uniform_(self.output_proj.weight.data)
+        constant_(self.output_proj.bias.data, 0.)
 
     def forward(self, qurey, enc_src, src_shapes):
         b, N, d_model = qurey.shape
@@ -423,7 +427,7 @@ class DeformableAttention(nn.Module):
         sample_feature = attention_weights * enc_src_feat
         sample_feature = sample_feature.sum(dim=-2)
 
-        return sample_feature
+        return self.output_proj(sample_feature)
     
 class DETRTransformerDecoderLayer(nn.Module):
     def __init__(self, d_model=256, n_heads=8, d_ffn=1024, dropout=0.0, act=nn.ReLU(), n_points=4,
@@ -473,7 +477,6 @@ class DETRTransformerDecoderLayer(nn.Module):
         embed = self.norm1(embed)
 
         # Cross attention
-
         if self.use_deformable:
             tgt = self.deformable_cross_attn(self.with_pos_embed(embed, query_pos), feats, feats_shapes)
         else:
@@ -497,28 +500,32 @@ class DETRTransformerDecoder(nn.Module):
     def forward(
         self,
         embed,  # decoder embeddings
-        anchors,
+        refer_bbox,
         feats,  # image features
         feats_shapes,
         bbox_head,
         score_head,
-        query_pos_head
+        query_pos_head,
+        attn_mask=None
     ):
         """Perform the forward pass through the entire decoder."""
         output = embed
         dec_bboxes = []
         dec_cls = []
 
-        if anchors is not None:
-            refer_bbox = anchors.sigmoid()
+        if refer_bbox is not None:
+            refer_bbox = refer_bbox.sigmoid()
+            last_refined_bbox = refer_bbox
             for i, layer in enumerate(self.layers):
-                output = layer(output, feats, feats_shapes, query_pos=query_pos_head(refer_bbox))
+                output = layer(output, feats, feats_shapes, query_pos=query_pos_head(refer_bbox), attn_mask=attn_mask)
                 dec_cls.append(score_head[i](output))
                 reg = bbox_head[i](output)
-                refined_bbox = torch.sigmoid(reg + inverse_sigmoid(refer_bbox))
+                refined_bbox = torch.sigmoid(reg + inverse_sigmoid(last_refined_bbox))
                 dec_bboxes.append(refined_bbox)
 
-                # refer_bbox = refined_bbox.detach()
+                # last_refined_bbox = refined_bbox
+                # refer_bbox = refined_bbox.detach() if self.training else refined_bbox
+
         else:
             for i, layer in enumerate(self.layers):
                 output = layer(output, feats, feats_shapes)
@@ -604,6 +611,15 @@ class DETRDecoder(nn.Module):
         self.dec_score_head = nn.ModuleList([nn.Linear(hd, nc) for _ in range(ndl)])
         self.dec_bbox_head = nn.ModuleList([MLP(hd, hd, 4, num_layers=3) for _ in range(ndl)])
 
+        # Denoising part
+        nd=10  # num denoising
+        label_noise_ratio=0.2
+        box_noise_scale=0.4
+        self.denoising_class_embed = nn.Embedding(nc, hd)
+        self.num_denoising = nd
+        self.label_noise_ratio = label_noise_ratio
+        self.box_noise_scale = box_noise_scale
+
         self._reset_parameters()
 
     def _reset_parameters(self):
@@ -626,22 +642,29 @@ class DETRDecoder(nn.Module):
         for layer in self.input_proj:
             xavier_uniform_(layer[0].weight)
 
-    def generate_anchors(self):
+    def generate_anchors_dn(self, bs, dn_bbox=None, dn_embed=None):
+        embeddings = self.tgt_embed.weight.unsqueeze(0).repeat(bs, 1, 1)
         if not self.use_anchor:
-            return None
+            return None, embeddings
         if self.num_queries not in [i * i for i in range(2, 10)]:
             raise Exception("query num must 4, 9, 16 ...")
 
-        device = self.tgt_embed.weight.device
-        dtype = self.tgt_embed.weight.dtype
-        s = torch.linspace(0, 1, int(math.sqrt(self.num_queries)) + 2, device=device, dtype=dtype)[1:-1]
+        s = torch.linspace(0, 1, int(math.sqrt(self.num_queries)) + 2, 
+                           device=embeddings.device, dtype=embeddings.dtype)[1:-1]
 
         grid_y, grid_x = torch.meshgrid(s, s)
         grid_xy = torch.stack([grid_x, grid_y], -1)  # (n, n, 2)
         anchor_pos = grid_xy.view(-1, 2) # (num_q, 2)
         anchor_shape = torch.ones_like((anchor_pos)) * 0.1
         anchor = torch.concat((anchor_pos, anchor_shape), dim=1)
-        return anchor
+
+        refer_bbox = anchor.unsqueeze(0).repeat(bs, 1, 1)
+        if dn_bbox is not None:
+            refer_bbox = torch.cat([dn_bbox, refer_bbox], 1)
+        if dn_embed is not None:
+            embeddings = torch.cat([dn_embed, embeddings], 1)
+
+        return refer_bbox, embeddings
 
     def forward(self, x, batch=None):
         """Runs the forward pass of the module, returning bounding box and classification scores for the input."""
@@ -652,22 +675,34 @@ class DETRDecoder(nn.Module):
         # Input projection and embedding
         feats, shapes = self._get_encoder_input(x)
 
+        # Prepare denoising training
+        from ultralytics.models.utils.ops import get_cdn_group
+        dn_embed, dn_bbox, attn_mask, dn_meta = get_cdn_group(
+            batch,
+            self.nc,
+            self.num_queries,
+            self.denoising_class_embed.weight,
+            self.num_denoising,
+            self.label_noise_ratio,
+            self.box_noise_scale,
+            self.training,
+        )
+
         bs = feats.shape[0]
-        embed = self.tgt_embed.weight.unsqueeze(0).repeat(bs, 1, 1)
-        anchors = self.generate_anchors()
-        anchors = anchors.unsqueeze(0).repeat(bs, 1, 1)
+        refer_bbox, embeddings = self.generate_anchors_dn(bs, dn_bbox=dn_bbox, dn_embed=dn_embed)
 
         # Decoder
         dec_bboxes, dec_scores = self.decoder(
-            embed,
-            anchors,
+            embeddings,
+            refer_bbox,
             feats,
             shapes,
             self.dec_bbox_head,
             self.dec_score_head,
-            self.query_pos_head
+            self.query_pos_head,
+            attn_mask
         )
-        x = dec_bboxes, dec_scores
+        x = dec_bboxes, dec_scores, dn_meta
         if self.training:
             return x
         # (bs, 300, 4+nc)

@@ -75,10 +75,10 @@ class HungarianMatcher(nn.Module):
 
         # We flatten to compute the cost matrices in a batch
         # [batch_size * num_queries, num_classes]
-        pred_scores = pred_scores.detach().view(-1, nc)
+        pred_scores = pred_scores.detach().reshape(-1, nc)
         pred_scores = torch.sigmoid(pred_scores) if self.use_fl else F.softmax(pred_scores, dim=-1)
         # [batch_size * num_queries, 4]
-        pred_bboxes = pred_bboxes.detach().view(-1, 4)
+        pred_bboxes = pred_bboxes.detach().reshape(-1, 4)
 
         # Compute the classification cost
         pred_scores = pred_scores[:, gt_cls]
