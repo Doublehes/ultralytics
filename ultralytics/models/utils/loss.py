@@ -358,3 +358,5 @@ class RTDETRDetectionLoss(DETRLoss):
             else:
                 dn_match_indices.append((torch.zeros([0], dtype=torch.long), torch.zeros([0], dtype=torch.long)))
         return dn_match_indices
+
+

@@ -523,8 +523,8 @@ class DETRTransformerDecoder(nn.Module):
                 refined_bbox = torch.sigmoid(reg + inverse_sigmoid(last_refined_bbox))
                 dec_bboxes.append(refined_bbox)
 
-                # last_refined_bbox = refined_bbox
-                # refer_bbox = refined_bbox.detach() if self.training else refined_bbox
+                last_refined_bbox = refined_bbox
+                refer_bbox = refined_bbox.detach() if self.training else refined_bbox
 
         else:
             for i, layer in enumerate(self.layers):
@@ -559,8 +559,7 @@ class DETRDecoder(nn.Module):
         ndl=6,  # num decoder layers
         d_ffn=1024,  # dim of feedforward
         use_anchor=True,
-        use_deformable=True,
-        learnt_init_query=True,
+        use_deformable=True
     ):
         """
         Initializes the RTDETRDecoder module with the given parameters.
@@ -602,17 +601,22 @@ class DETRDecoder(nn.Module):
         self.decoder = DETRTransformerDecoder(hd, decoder_layer, ndl)
 
         # Decoder embedding
-        self.learnt_init_query = learnt_init_query
-        if learnt_init_query:
-            self.tgt_embed = nn.Embedding(nq, hd)
+        self.tgt_embed = nn.Embedding(nq, hd)
         self.query_pos_head = MLP(4, 2 * hd, hd, num_layers=2)
+        self.refpoint_embed = nn.Embedding(nq, 4) # x, y, w, h
+        random_refpoints_xy = False
+        if random_refpoints_xy:
+            # import ipdb; ipdb.set_trace()
+            self.refpoint_embed.weight.data[:, :2].uniform_(0,1)
+            self.refpoint_embed.weight.data[:, :2] = inverse_sigmoid(self.refpoint_embed.weight.data[:, :2])
+            self.refpoint_embed.weight.data[:, :2].requires_grad = False
 
         # Decoder head
         self.dec_score_head = nn.ModuleList([nn.Linear(hd, nc) for _ in range(ndl)])
         self.dec_bbox_head = nn.ModuleList([MLP(hd, hd, 4, num_layers=3) for _ in range(ndl)])
 
         # Denoising part
-        nd=10  # num denoising
+        nd=9  # num denoising
         label_noise_ratio=0.2
         box_noise_scale=0.4
         self.denoising_class_embed = nn.Embedding(nc, hd)
@@ -635,8 +639,9 @@ class DETRDecoder(nn.Module):
             constant_(reg_.layers[-1].weight, 0.0)
             constant_(reg_.layers[-1].bias, 0.0)
 
-        if self.learnt_init_query:
-            xavier_uniform_(self.tgt_embed.weight)
+        xavier_uniform_(self.tgt_embed.weight)
+        self.refpoint_embed.weight.data.uniform_(0.01, 0.99)
+        self.refpoint_embed.weight.data = inverse_sigmoid(self.refpoint_embed.weight.data)
         xavier_uniform_(self.query_pos_head.layers[0].weight)
         xavier_uniform_(self.query_pos_head.layers[1].weight)
         for layer in self.input_proj:
@@ -646,17 +651,20 @@ class DETRDecoder(nn.Module):
         embeddings = self.tgt_embed.weight.unsqueeze(0).repeat(bs, 1, 1)
         if not self.use_anchor:
             return None, embeddings
-        if self.num_queries not in [i * i for i in range(2, 10)]:
-            raise Exception("query num must 4, 9, 16 ...")
+        if self.num_queries not in [i * i for i in range(2, 11)]:
+            raise Exception("query num must 4, 9, 16 ... 100")
 
-        s = torch.linspace(0, 1, int(math.sqrt(self.num_queries)) + 2, 
-                           device=embeddings.device, dtype=embeddings.dtype)[1:-1]
-
-        grid_y, grid_x = torch.meshgrid(s, s)
-        grid_xy = torch.stack([grid_x, grid_y], -1)  # (n, n, 2)
-        anchor_pos = grid_xy.view(-1, 2) # (num_q, 2)
-        anchor_shape = torch.ones_like((anchor_pos)) * 0.1
-        anchor = torch.concat((anchor_pos, anchor_shape), dim=1)
+        learnt_anchor = True
+        if learnt_anchor:
+            anchor = self.refpoint_embed.weight
+        else:
+            n = int(math.sqrt(self.num_queries))
+            s = (torch.arange(n, device=embeddings.device, dtype=embeddings.dtype) + 0.5) / n
+            grid_y, grid_x = torch.meshgrid(s, s)
+            grid_xy = torch.stack([grid_x, grid_y], -1)  # (n, n, 2)
+            anchor_xy = grid_xy.view(-1, 2) # (num_q, 2)
+            anchor_wh = torch.ones_like((anchor_xy)) * 0.2
+            anchor = torch.concat((anchor_xy, anchor_wh), dim=1)
 
         refer_bbox = anchor.unsqueeze(0).repeat(bs, 1, 1)
         if dn_bbox is not None:

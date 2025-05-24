@@ -82,7 +82,8 @@ class DETRTrainer(DetectionTrainer):
         Returns:
             (RTDETRValidator): Validator object for model validation.
         """
-        self.loss_names = "giou_loss", "cls_loss", "l1_loss"
+        self.loss_names = ['l_cls', 'l_bbox', 'l_giou', 'l_cls_dn', 'l_bbox_dn', 'l_giou_dn']
+        # self.loss_names = "giou_loss", "cls_loss", "l1_loss"
         return DETRValidator(self.test_loader, save_dir=self.save_dir, args=copy(self.args))
 
     def preprocess_batch(self, batch):

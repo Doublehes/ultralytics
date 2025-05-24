@@ -599,8 +599,8 @@ class DETRDetectionModel(DetectionModel):
     def init_criterion(self):
         """Initialize the loss criterion for the RTDETRDetectionModel."""
         from ultralytics.models.utils.loss import DETRLoss, RTDETRDetectionLoss
-        loss_gain = {"class": 1, "bbox": 5, "giou": 2, "no_object": 0.1, "mask": 1, "dice": 1}
-        cost_gain={"class": 2, "bbox": 5, "giou": 2}
+        # loss_gain = {"class": 1, "bbox": 5, "giou": 2, "no_object": 0.1, "mask": 1, "dice": 1}
+        # cost_gain={"class": 2, "bbox": 5, "giou": 2}
         # return DETRLoss(nc=self.nc, use_vfl=True, loss_gain=loss_gain, cost_gain=cost_gain)
         return RTDETRDetectionLoss(nc=self.nc, use_vfl=True)
 
@@ -643,8 +643,11 @@ class DETRDetectionModel(DetectionModel):
             (dec_bboxes, dec_scores), targets, dn_bboxes=dn_bboxes, dn_scores=dn_scores, dn_meta=dn_meta
         )
         # NOTE: There are like 12 losses in RTDETR, backward with all losses but only show the main three losses.
+        # return sum(loss.values()), torch.as_tensor(
+        #     [loss[k].detach() for k in ["loss_giou", "loss_class", "loss_bbox"]], device=img.device
+        # )
         return sum(loss.values()), torch.as_tensor(
-            [loss[k].detach() for k in ["loss_giou", "loss_class", "loss_bbox"]], device=img.device
+            [loss[k].detach() for k in ['loss_class', 'loss_bbox', 'loss_giou', 'loss_class_dn', 'loss_bbox_dn', 'loss_giou_dn']], device=img.device
         )
 
     def predict(self, x, profile=False, visualize=False, batch=None, augment=False, embed=None):
