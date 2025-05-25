@@ -390,32 +390,32 @@ class DeformableAttention(nn.Module):
         constant_(self.reference_points.bias, 0)
 
         self.attention_weights = nn.Linear(self.d_model, 1)
-        xavier_uniform_(self.attention_weights.weight.data, 0.)
+        xavier_uniform_(self.attention_weights.weight)
         constant_(self.attention_weights.bias.data, 0.)
         self.feature_cov = nn.Conv2d(self.d_model, self.d_model, kernel_size=1)
         n = self.feature_cov.kernel_size[0] * self.feature_cov.kernel_size[1] * self.d_model
         self.feature_cov.weight.data.normal_(0, math.sqrt(2. / n))
 
         self.output_proj = nn.Linear(d_model, d_model)
-        xavier_uniform_(self.output_proj.weight.data)
+        xavier_uniform_(self.output_proj.weight)
         constant_(self.output_proj.bias.data, 0.)
 
-    def forward(self, qurey, enc_src, src_shapes):
-        b, N, d_model = qurey.shape
+    def forward(self, query, enc_src, src_shapes):
+        b, N, d_model = query.shape
         num_levels = len(src_shapes)
 
         # TODO: use all level feats
         h, w = src_shapes[0]
         enc_src = enc_src[:, : h*w, :].permute(0, 2, 1).reshape(b, self.d_model, h, w)
 
-        refrence_points = self.reference_points(qurey).sigmoid()
+        refrence_points = self.reference_points(query).sigmoid()
         sample_refrence_points = 2 * refrence_points - 1
         sample_refrence_points = sample_refrence_points.view(b, N, self.n_points, 2)
         enc_src = self.feature_cov(enc_src)
         enc_src_list = torch.split(enc_src, int(self.d_model / self.n_heads), dim=1)
         enc_src_sample_list = []
         for i in range(self.n_heads):
-            featl = nn.functional.grid_sample(enc_src_list[i], sample_refrence_points, mode='nearest',
+            featl = nn.functional.grid_sample(enc_src_list[i], sample_refrence_points, mode='nearest',  # 'bilinear',
                                                 padding_mode='zeros', align_corners=False)
             enc_src_sample_list.append(featl.unsqueeze(3))
         enc_src_feat=torch.cat(enc_src_sample_list, dim=1).squeeze(3)
@@ -559,7 +559,9 @@ class DETRDecoder(nn.Module):
         ndl=6,  # num decoder layers
         d_ffn=1024,  # dim of feedforward
         use_anchor=True,
-        use_deformable=True
+        learnt_anchor=True,
+        use_deformable=True,
+        nd=0,  # num denoising
     ):
         """
         Initializes the RTDETRDecoder module with the given parameters.
@@ -590,6 +592,7 @@ class DETRDecoder(nn.Module):
         self.num_decoder_layers = ndl
 
         self.use_anchor = use_anchor
+        self.learnt_anchor = learnt_anchor
 
         # Backbone feature projection
         self.input_proj = nn.ModuleList(nn.Sequential(nn.Conv2d(x, hd, 1, bias=False), nn.BatchNorm2d(hd)) for x in ch)
@@ -616,7 +619,6 @@ class DETRDecoder(nn.Module):
         self.dec_bbox_head = nn.ModuleList([MLP(hd, hd, 4, num_layers=3) for _ in range(ndl)])
 
         # Denoising part
-        nd=9  # num denoising
         label_noise_ratio=0.2
         box_noise_scale=0.4
         self.denoising_class_embed = nn.Embedding(nc, hd)
@@ -654,8 +656,7 @@ class DETRDecoder(nn.Module):
         if self.num_queries not in [i * i for i in range(2, 11)]:
             raise Exception("query num must 4, 9, 16 ... 100")
 
-        learnt_anchor = True
-        if learnt_anchor:
+        if self.learnt_anchor:
             anchor = self.refpoint_embed.weight
         else:
             n = int(math.sqrt(self.num_queries))

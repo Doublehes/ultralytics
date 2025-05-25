@@ -39,7 +39,7 @@ head:
   - [[-1, 7], 1, Concat, [1]] # cat Y5
   - [-1, 3, RepC3, [128, 1]] # F5 (22), pan_blocks.1
 
-  - [[19], 1, DETRDecoder, [nc, 128, 9, 4, 4, 3, 256, False, False, False, 0]] # Detect(P3, P4, P5)
+  - [[19], 1, DETRDecoder, [nc, 128, 9, 4, 4, 3, 256, True, True, True, 9]] # Detect(P3, P4, P5)
         
         # nc=80,
         # ---- ch=(512, 1024, 2048) --- automatically set

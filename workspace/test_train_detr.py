@@ -14,9 +14,11 @@ data_yaml = "./workspace/config/shape.yaml"
 
 # cfg_yamf = "./workspace/config/rtdetr-s.yaml"
 # cfg_yamf = "./workspace/config/detr_q9.yaml"
-# cfg_yamf = "./workspace/config/detr_anchor9.yaml"
-# cfg_yamf = "./workspace/config/detr_q9_df.yaml"
-cfg_yamf = "./workspace/config/detr_anchor9_df.yaml"
+# cfg_yamf = "./workspace/config/detr_ganchor9.yaml"
+cfg_yamf = "./workspace/config/detr_q9_df.yaml"
+# cfg_yamf = "./workspace/config/detr_lanchor9_df.yaml"
+# cfg_yamf = "./workspace/config/detr_ganchor9_dn9.yaml"
+# cfg_yamf = "./workspace/config/detr_ganchor9_dn9_df.yaml"
 
 
 if "rtdetr" in cfg_yamf:
@@ -48,7 +50,7 @@ project = f"./runs/train_{data_name}"
 if test:
     project = project + "_test"
 
-run_name = f"{model_name}_dn9_{data_name}_bs{batch}_ep{epochs}_imgsz{imgsz}_id"
+run_name = f"{model_name}_{data_name}_bs{batch}_ep{epochs}_imgsz{imgsz}_id"
 
 if resume:
     model_pt = f"./{project}/{run_name}/weights/last.pt"

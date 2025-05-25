@@ -39,7 +39,7 @@ head:
   - [[-1, 7], 1, Concat, [1]] # cat Y5
   - [-1, 3, RepC3, [128, 1]] # F5 (22), pan_blocks.1
 
-  - [[19], 1, DETRDecoder, [nc, 128, 9, 4, 4, 3, 256, True, False]] # Detect(P3, P4, P5)
+  - [[19], 1, DETRDecoder, [nc, 128, 9, 4, 4, 3, 256, True, True, False, 9]] # Detect(P3, P4, P5)
         
         # nc=80,
         # ---- ch=(512, 1024, 2048) --- automatically set
@@ -50,4 +50,6 @@ head:
         # ndl=6,  # num decoder layers
         # d_ffn=1024,  # dim of feedforward
         # use_anchor=True,
+        # learnt_anchor=True,
         # use_deformable=True,
+        # nd=0,  # num denoising
