@@ -391,88 +391,82 @@ class DeformableAttentionNew(nn.Module):
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
 
         # 输出参考点 (N, num_levels * 2)，归一化坐标
-        self.reference_points = nn.Linear(d_model, n_levels * 2)
+        self.reference_points = nn.Linear(d_model,  2 * n_points)
         xavier_uniform_(self.reference_points.weight)
         constant_(self.reference_points.bias, 0)
 
-        # 每个head的采样偏移 (N, n_heads * n_points * 2)
-        self.sampling_offsets = nn.Linear(d_model, n_heads * n_points * 2)
+        # 每个head的采样偏移 (N, n_heads * n_levels * n_points * 2)
+        self.sampling_offsets = nn.Linear(d_model, n_heads * n_levels * n_points * 2)
         constant_(self.sampling_offsets.weight, 0)
         constant_(self.sampling_offsets.bias, 0)
 
-        # 多头注意力权重 (N, n_heads * n_points)
-        self.attention_weights = nn.Linear(d_model, n_heads * n_points)
+        # 多头注意力权重 (N, n_heads * n_levels * n_points)
+        self.attention_weights = nn.Linear(d_model, n_heads * n_levels * n_points)
         xavier_uniform_(self.attention_weights.weight)
         constant_(self.attention_weights.bias, 0)
 
-        # 用1x1卷积统一 encoder 输入特征通道
-        self.input_proj = nn.ModuleList([
-            nn.Conv2d(d_model, d_model, kernel_size=1)
-            for _ in range(n_levels)
-        ])
-
+        self.input_proj = nn.Linear(d_model, d_model)
+        xavier_uniform_(self.input_proj.weight)
+        constant_(self.input_proj.bias, 0)
         self.output_proj = nn.Linear(d_model, d_model)
         xavier_uniform_(self.output_proj.weight)
         constant_(self.output_proj.bias, 0)
 
-        self.norm = nn.LayerNorm(d_model)
-
-    def forward(self, query, multi_level_feats, src_shapes):
+    def forward(self, query, multi_level_feats, feats_shapes, refer_bbox=None):
         """
         query: (b, num_query, d_model)
-        multi_level_feats: list of length L, each is (b, c, h, w)
+        multi_level_feats: tensor of (b, (h*w)*ml, C)
         src_shapes: list of tuples, each (h, w)
+        refer_bbox: (b, N, 2/4)
         """
         b, num_query, _ = query.shape
-        dtype = query.dtype
-        device = query.device
 
-        # Step 1: 获取每个query的参考点 (归一化坐标)，形状 (b, num_query, n_levels, 2)
-        reference_points = self.reference_points(query).view(b, num_query, self.n_levels, 2).sigmoid()
+        # 获取每个query的采样点
+        if refer_bbox is None:
+            sampling_locations = self.reference_points(query).view(b, num_query, self.n_points, 2).sigmoid()
+            sampling_locations = sampling_locations.unsqueeze(2).unsqueeze(3)  # (b, num_query, 1, 1, n_points, 2)
+            sampling_locations = sampling_locations.expand(b, num_query, self.n_heads, self.n_levels, self.n_points, 2)
+        else:
+            # 获取采样偏移，形状 (b, num_query, n_heads, n_level, n_points, 2)
+            sampling_offsets = self.sampling_offsets(query).view(b, num_query, self.n_heads, self.n_levels, self.n_points, 2)
+            # sampling location
+            if refer_bbox.shape[-1] == 2:
+                add = sampling_offsets / self.n_points
+                sampling_locations = refer_bbox[:, :, None, None, None, :] + add
+            elif refer_bbox.shape[-1] == 4:
+                add = sampling_offsets / self.n_points * refer_bbox[:, :, None, None, None, 2:] * 0.5
+                sampling_locations = refer_bbox[:, :, None, None, None, :2] + add
+            else:
+                raise ValueError(f"Last dim of reference_points must be 2 or 4, but got {refer_bbox.shape[-1]}.")
+        sampling_grids = 2 * sampling_locations - 1 # (bs, N, n_head, n_level, n_point, 2)
 
-        # Step 2: 获取采样偏移，形状 (b, num_query, n_heads, n_points, 2)
-        sampling_offsets = self.sampling_offsets(query).view(b, num_query, self.n_heads, self.n_points, 2)
+        #  获取注意力权重，(b, num_query, n_heads, n_level * n_points)
+        attention_weights = self.attention_weights(query).view(b, num_query, self.n_heads, self.n_levels * self.n_points)
+        attention_weights = nn.functional.softmax(attention_weights, dim=-1).view(
+            b, num_query, self.n_heads, self.n_levels, self.n_points)
 
-        # Step 3: 获取注意力权重，(b, num_query, n_heads, n_points)
-        attention_weights = self.attention_weights(query).view(b, num_query, self.n_heads, self.n_points)
-        attention_weights = nn.functional.softmax(attention_weights, dim=-1)
-
-        # Step 4: 逐尺度处理每层特征
+        # 逐尺度处理每层特征
+        multi_level_feats = self.input_proj(multi_level_feats)
+        feats_list = multi_level_feats.split([H_ * W_ for H_, W_ in feats_shapes], dim=1) #
         sampled_feats = []
-        for lvl, feat in enumerate(multi_level_feats):
-            h, w = src_shapes[lvl]
-            proj_feat = self.input_proj[lvl](feat)  # (b, c, h, w)
-            proj_feat = proj_feat.view(b, self.n_heads, self.d_per_head, h, w)
-
-            # 获取当前尺度的参考点，映射到 [-1, 1]
-            ref = reference_points[:, :, lvl, :]  # (b, num_query, 2)
-            ref = ref.unsqueeze(2).unsqueeze(3)  # (b, num_query, 1, 1, 2)
-            offset = sampling_offsets / self.n_points  # 归一化偏移量
-            sampling_locations = ref + offset  # (b, num_query, n_heads, n_points, 2)
-            sampling_locations = sampling_locations * 2 - 1  # scale to [-1, 1]
-
-            # grid_sample 的输入要求 [N, C, H, W]，grid 要 shape [N, H_out, W_out, 2]
-            sampling_locations = sampling_locations.permute(0, 2, 1, 3, 4).reshape(
-                b * self.n_heads, num_query * self.n_points, 1, 2
+        for lvl, (h, w) in enumerate(feats_shapes):
+            # bs*n_head, dim, h, w
+            feats_l_ = feats_list[lvl].transpose(1, 2).reshape(b*self.n_heads, self.d_per_head, h, w)
+            # bs*num_heads, num_queries, num_points, 2
+            sampling_grid_l_ = sampling_grids[:, :, :, lvl].transpose(1, 2).flatten(0, 1)
+            # bs*num_heads, embed_dims, num_queries, num_points
+            sampling_feats_l_ = nn.functional.grid_sample(
+                feats_l_, sampling_grid_l_, mode="bilinear", padding_mode="zeros", align_corners=False
             )
-            feat = proj_feat.reshape(b * self.n_heads, self.d_per_head, h, w)
-            sampled = F.grid_sample(
-                feat, sampling_locations, mode='bilinear', align_corners=False
-            )  # (b * heads, d_head, num_query * n_points, 1)
+            sampled_feats.append(sampling_feats_l_)
 
-            sampled = sampled.view(b, self.n_heads, self.d_per_head, num_query, self.n_points)
-            sampled = sampled.permute(0, 3, 1, 4, 2)  # (b, num_query, n_heads, n_points, d_head)
-            sampled_feats.append(sampled)
+        # 加权
+        sampled_feats = torch.stack(sampled_feats, dim=-2).flatten(-2) # bs*n_head, dim, n_q, n_level * n_point
+        attention_weights = attention_weights.transpose(1, 2).reshape(b*self.n_heads, 1, num_query, self.n_levels * self.n_points)
+        weighted_feats = (sampled_feats * attention_weights).sum(-1) # bs*n_head, dim, n_q, 1
+        weighted_feats = weighted_feats.view(b, self.n_heads * self.d_per_head, num_query).transpose(1,2).contiguous()
 
-        # Step 5: 融合所有层输出 (简单加和)
-        feat_all = sum(sampled_feats)  # (b, num_query, n_heads, n_points, d_head)
-
-        # Step 6: 加权
-        attention_weights = attention_weights.unsqueeze(-1)  # (b, num_query, n_heads, n_points, 1)
-        weighted_feat = (feat_all * attention_weights).sum(dim=3)  # sum over points
-        weighted_feat = weighted_feat.permute(0, 2, 1, 3).reshape(b, num_query, self.d_model)
-
-        return self.norm(self.output_proj(weighted_feat))
+        return self.output_proj(weighted_feats)
 
 
 class DeformableAttention(nn.Module):
@@ -551,7 +545,9 @@ class DETRTransformerDecoderLayer(nn.Module):
         # Cross attention
         self.cross_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout)
         if self.use_deformable:
-            self.deformable_cross_attn = DeformableAttention(d_model, n_heads, n_points)
+            # self.deformable_cross_attn = DeformableAttention(d_model, n_heads, n_points)
+            self.deformable_cross_attn = DeformableAttentionNew(d_model, n_heads, n_points)
+
         self.dropout2 = nn.Dropout(dropout)
         self.norm2 = nn.LayerNorm(d_model)
 
@@ -625,11 +621,7 @@ class DETRTransformerDecoder(nn.Module):
             refer_bbox = refer_bbox.sigmoid()
             last_refined_bbox = refer_bbox
             for i, layer in enumerate(self.layers):
-                try:
-                    output = layer(output, refer_bbox, feats, feats_shapes, query_pos=query_pos_head(refer_bbox), attn_mask=attn_mask)
-                except:
-                    import pudb;pudb.set_trace()
-                    pass
+                output = layer(output, refer_bbox, feats, feats_shapes, query_pos=query_pos_head(refer_bbox), attn_mask=attn_mask)
                 dec_cls.append(score_head[i](output))
                 reg = bbox_head[i](output)
                 refined_bbox = torch.sigmoid(reg + inverse_sigmoid(last_refined_bbox))
@@ -712,8 +704,8 @@ class DETRDecoder(nn.Module):
         # self.input_proj = nn.ModuleList(Conv(x, hd, act=False) for x in ch)
 
         # Transformer module
-        decoder_layer = DeformableTransformerDecoderLayer(d_model=hd, n_heads=nh, d_ffn=d_ffn, n_levels=1)
-        # decoder_layer = DETRTransformerDecoderLayer(d_model=hd, n_heads=nh, d_ffn=d_ffn, use_deformable=use_deformable)
+        # decoder_layer = DeformableTransformerDecoderLayer(d_model=hd, n_heads=nh, d_ffn=d_ffn, n_levels=1)
+        decoder_layer = DETRTransformerDecoderLayer(d_model=hd, n_heads=nh, d_ffn=d_ffn, use_deformable=use_deformable)
         self.decoder = DETRTransformerDecoder(hd, decoder_layer, ndl)
 
         # Decoder embedding

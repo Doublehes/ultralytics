@@ -16,9 +16,9 @@ data_yaml = "./workspace/config/shape.yaml"
 # cfg_yamf = "./workspace/config/detr_q9.yaml"
 # cfg_yamf = "./workspace/config/detr_ganchor9.yaml"
 # cfg_yamf = "./workspace/config/detr_q9_df.yaml"
-# cfg_yamf = "./workspace/config/detr_ganchor9_df.yaml"
+# cfg_yamf = "./workspace/config/detr_lanchor9_df.yaml"
 # cfg_yamf = "./workspace/config/detr_ganchor9_dn9.yaml"
-cfg_yamf = "./workspace/config/detr_ganchor9_dn9_df.yaml"
+cfg_yamf = "./workspace/config/detr_lanchor9_df_dn9.yaml"
 
 
 if "rtdetr" in cfg_yamf:
