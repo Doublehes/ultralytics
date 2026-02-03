@@ -12,15 +12,30 @@
 
 
 import numpy as np
-from PIL import Image
-import matplotlib.pyplot as plt
 import pickle
 import os
 import random
 from tqdm import tqdm
 import shutil
+import cv2
 
-from nuscenes_convert import show, filter
+
+
+def show(img_path, labels):
+    img = cv2.imread(img_path)
+    img_h, img_w = img.shape[:2]
+
+
+    # Show boxes.
+    for label in labels:
+        xy = np.array([label[1], label[2]]) * np.array([img_w, img_h])
+        wh = np.array([label[3], label[4]]) * np.array([img_w, img_h])
+        lt = xy - wh / 2
+        rb = xy + wh / 2
+        cv2.rectangle(img, (int(lt[0]), int(lt[1])), (int(rb[0]), int(rb[1])), (0, 255, 0), 2)
+
+    cv2.imshow('img', img)
+    cv2.waitKey(-1)
 
 
 def get_car_3d_info(bbox_3d):
@@ -60,7 +75,10 @@ def get_labels(cam_ins):
     label_info = []
     for instance in cam_ins:
         label = instance["bbox_label"]
-        if label not in [0, 1, 2, 3]: # 'car', 'truck', 'trailer', 'bus' 
+        # nus_categories = ('car', 'truck', 'trailer', 'bus', 'construction_vehicle',
+        #                 'bicycle', 'motorcycle', 'pedestrian', 'traffic_cone',
+        #                 'barrier')
+        if label not in [0, 1, 2, 3, 4, 5, 6, 7]:
             continue
         if not instance["bbox_3d_isvalid"]:
             continue
@@ -75,11 +93,65 @@ def get_labels(cam_ins):
         
     return label_info
 
+def calc_coverage(bbox1, bbox2):
+    x11, y11, x12, y12 = np.split(bbox1, 4, axis=-1)
+    x21, y21, x22, y22 = np.split(bbox2, 4, axis=-1)
+    xA = np.maximum(x11, np.transpose(x21))
+    yA = np.maximum(y11, np.transpose(y21))
+    xB = np.minimum(x12, np.transpose(x22))
+    yB = np.minimum(y12, np.transpose(y22))
+
+    i_width = np.maximum((xB - xA), 0)
+    i_height = np.maximum((yB - yA), 0)
+    inter = i_width * i_height
+    boxAArea = (x12 - x11) * (y12 - y11)
+    boxBArea = (x22 - x21) * (y22 - y21)
+    min_area = np.minimum(boxAArea, np.transpose(boxBArea))
+    coverage = inter / (1e-7 + min_area)
+    
+    return coverage, boxAArea, boxBArea
+
+def filter(labels: list):
+    """
+    @pram labels: list of labels, each label is a list of [class_id, x, y, w, h, cx, cy, cz, cw, ch, cl, cyaw]
+    """
+    if len(labels) == 0:
+        return []
+    labels = np.array(labels)
+    dist = np.linalg.norm(labels[:, 5:7], axis=1)
+    labels = np.concatenate((labels, dist.reshape(-1, 1)), axis=1).tolist()
+    labels = [x for x in labels if x[-1] < 60]
+    if len(labels) == 0:
+        return []
+    labels.sort(key=lambda x: x[-1])
+    box = np.array(labels).copy()[:, 1:5]
+    left = box[:, 0] - box[:, 2] / 2
+    right = box[:, 0] + box[:, 2] / 2
+    top = box[:, 1] - box[:, 3] / 2
+    bottom = box[:, 1] + box[:, 3] / 2
+    box = np.stack([left, top, right, bottom], axis=1)
+    coverage, area, _ = calc_coverage(box, box)
+
+    selected = []
+    passed = []
+    for i in range(len(labels)):
+        if i in passed:
+            continue
+        passed.append(i)
+        selected.append(labels[i])
+        for j in range(i + 1, len(labels)):
+            if j in passed:
+                continue
+            if coverage[i, j] > 0.5 and area[j] < area[i]:
+                passed.append(j)
+
+    return selected
+
 
 
 def main(pkl_path, save_dir, sample_num=100, only_show=True, only_label_2d=True):
 
-    root_path = "/media/double/Data/datasets/nuScenese"
+    root_path = "/media/double/Data1/datasets/nuScenese"
     cam = "CAM_FRONT"
     save_dir = os.path.join(root_path, save_dir)
     img_dir = os.path.join(save_dir, "images")
@@ -124,9 +196,9 @@ def main(pkl_path, save_dir, sample_num=100, only_show=True, only_label_2d=True)
         process_bar.update(1)
 
 if __name__ == '__main__':
-    only_show = False
-    train_pkl = "/media/double/Data/datasets/nuScenese/nuscenes_infos_train.pkl"
-    train_dir = "yolo_dataset/train3d"
+    only_show = True
+    train_pkl = "/media/double/Data1/datasets/nuScenese/nuscenes_infos_train.pkl"
+    train_dir = "yolo_dataset/train3d_new"
     main(train_pkl, train_dir, 10000, only_show=only_show, only_label_2d=False)
 
     # val_pkl = "/media/double/Data/datasets/nuScenese/nuscenes_infos_val.pkl"
