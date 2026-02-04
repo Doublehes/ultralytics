@@ -367,7 +367,11 @@ class Detection3DLoss:
             loss[0], loss[2] = self.bbox_loss(
                 pred_distri, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask
             )
-            loss_3d_xy = F.smooth_l1_loss(pred_xy3d[fg_mask], target_3ds["xyz_3d"][fg_mask][..., :2], reduction="none")
+            pred_xy = pred_xy3d[fg_mask]
+            target_xy = target_3ds["xyz_3d"][fg_mask][..., :2]
+            valid_mask = abs(target_xy) < 200.0
+            valid_mask = valid_mask.all(axis=1)
+            loss_3d_xy = F.smooth_l1_loss(pred_xy[valid_mask], target_xy[valid_mask], reduction="none")
             # import pudb;pudb.set_trace()
             loss_3d_xy = loss_3d_xy.sum(axis=0) / target_scores_sum
             # loss_3d_xy *= 0.1

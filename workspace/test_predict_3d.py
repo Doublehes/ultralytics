@@ -25,10 +25,12 @@ def data_iterator(data_dir, with_label=True):
 
 
 if __name__ == "__main__":
-    pt = "runs/train_nuscenese-3d_test/yolo11n-3d_nuscenese-3d_bs8_ep100_sz960p_rect_wx0.2_wy0.5_10000/weights/best.pt"
+    pt = "runs/train_nuscenese-3d-new_test/yolo11n-3d_nuscenese-3d-new_bs8_ep50_sz960p_rect_wx0.2_wy0.5/weights/best.pt"
+    # pt = "runs/train_nuscenese-3d-new_test/yolo11n-3d_nuscenese-3d-new_bs8_ep100_sz960p_rect_wx0.2_wy0.5_100004/weights/best.pt"
     model = YOLO(pt, task="detect3d")
 
-    data_dir = "/media/double/Data/datasets/nuScenese/yolo_dataset/val3d"
+    # data_dir = "/home/double/Documents/BEVDet/data/nuScenese/yolo_dataset/val3d"
+    data_dir = "/home/double/Documents/BEVDet/data/nuScenese/yolo_dataset/data3d_new/val3d"
     iterator = data_iterator(data_dir, with_label=True)
     orig_size = 1600
     infer_size = 960
@@ -49,10 +51,20 @@ if __name__ == "__main__":
         for i, box in enumerate(result_3d):
             l, t, r, b, conf, cls, x, y = box
             cv2.rectangle(img, (int(l), int(t)), (int(r), int(b)), (255, 0, 0), 2)
-            boxes_3d.append([i, x, y, 4, 2, 0])
+            cv2.putText(img, f"{i}", (int(l), int(t) - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 2)
+            if int(cls) == 0:
+                length, width, yaw = 4, 2, 0
+            elif int(cls) == 1:
+                length, width, yaw = 1, 1, 0
+            else:
+                raise ValueError("Invalid class.")
+            boxes_3d.append([i, x, y, length, width, yaw])
         boxes_3d_gt = []
         for i, box in enumerate(label):
-            cls, cx, cy, cw, ch, x, y, z, width, height, length, yaw, dist = box
+            if len(box) > 12:
+                box = box[:12]
+            cls, cx, cy, cw, ch, x, y, z, width, height, length, yaw = box
             cx, cy, cw, ch = cx * 1600, cy * 900, cw * 1600, ch * 900
             l, t, r, b = cx - cw / 2, cy - ch / 2, cx + cw / 2, cy + ch / 2
             cv2.rectangle(img, (int(l), int(t)), (int(r), int(b)), (0, 255, 0), 2)

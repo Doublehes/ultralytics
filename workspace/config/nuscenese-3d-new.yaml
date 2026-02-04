@@ -1,0 +1,14 @@
+
+# Train/val/test sets as 1) dir: path/to/imgs, 2) file: path/to/imgs.txt, or 3) list: [path/to/imgs1, path/to/imgs2, ..]
+path: /home/double/Documents/BEVDet/data/nuScenese/yolo_dataset/data3d_new
+train: 
+  - train3d
+val: 
+  - val3d
+test:
+
+# Classes
+names:
+  0: vehicle
+  1: pedestrian
+  
