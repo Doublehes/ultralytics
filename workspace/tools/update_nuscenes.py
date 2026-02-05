@@ -25,7 +25,7 @@ def calc_iou2d(bbox1, bbox2):
 
 
 if __name__ == "__main__":
-    data_root = "/home/double/Documents/BEVDet/data/nuScenese/yolo_dataset/data3d_new/val3d"
+    data_root = "/home/double/Documents/BEVDet/data/nuScenese/yolo_dataset/nuscenes_data3d_all/val3d_all"
     img_dir = f"{data_root}/images"
     label_dir = f"{data_root}/labels"
     refresh_dir = f"{data_root}/labels_refresh"
@@ -64,6 +64,14 @@ if __name__ == "__main__":
         # 刷新后的标签
         with open(refresh_path, "r") as f:
             objs_refresed = json.load(f)
+        objs_refresed_new = []
+        for obj in objs_refresed:
+            w = obj["points"][2] - obj["points"][0]
+            if w / img_w > 0.9:
+                continue
+            objs_refresed_new.append(obj)
+        objs_refresed = objs_refresed_new
+
         refreshed_ltrb_list = []
         for obj in objs_refresed:
             ltrb = obj["points"]
