@@ -26,6 +26,7 @@ from .augment import (
     classify_augmentations,
     classify_transforms,
     v8_transforms,
+    det3d_transforms,
 )
 from .base import BaseDataset
 from .utils import (
@@ -640,13 +641,11 @@ class YOLODet3dDataset(BaseDataset):
 
     def build_transforms(self, hyp=None):
         """Builds and appends transforms to the list."""
-        # if self.augment:
-        #     hyp.mosaic = hyp.mosaic if self.augment and not self.rect else 0.0
-        #     hyp.mixup = hyp.mixup if self.augment and not self.rect else 0.0
-        #     transforms = v8_transforms(self, self.imgsz, hyp)
-        # else:
-        #     transforms = Compose([LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False)])
-        transforms = Compose([LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False)])
+        if self.augment:
+            transforms = det3d_transforms(self.imgsz, hyp)
+        else:
+            transforms = Compose([LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False)])
+        # transforms = Compose([LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False)])
         transforms.append(
             FormatDet3d(
                 bbox_format="xywh",

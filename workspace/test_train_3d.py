@@ -2,11 +2,11 @@ from ultralytics import YOLO, RTDETR
 
 
 # resume
-resume = True
+resume = False
 
 # data_yaml = "./workspace/config/nuimage.yaml"
 # data_yaml = "./workspace/config/nuscenese-2d.yaml"
-data_yaml = "./workspace/config/nuscenese-3d.yaml"
+data_yaml = "./workspace/config/nuscenese-3d-new.yaml"
 
 cfg_yamf = "./workspace/config/yolo11n-3d.yaml"
 # cfg_yamf = "yolo11n.yaml"
@@ -16,7 +16,7 @@ name_suffix = "_wx0.2_wy0.5_10000"
 pretrained = None
 MODEL_CLASS = YOLO
 test = True
-argumentation = False
+argumentation = True
 rect_train = True
 
 data_name = data_yaml.split('/')[-1].split('.')[0]
@@ -26,18 +26,29 @@ if test:
     project = project + "_test"
 imgsz = 960
 batch = 8
-epochs = 100
+epochs = 50
 run_name = f"{model_name}_{data_name}_bs{batch}_ep{epochs}_sz{imgsz}p"
 
 args = {
+    "degrees": 0.0,
     "translate": 0.0,
     "scale": 0.0,
     "fliplr": 0.0,
     "mosaic": 0.0,
-    "erasing": 0.0
+    "erasing": 0.0,
+    "perspective": 0.0,
+    "hsv_h": 0.0,
+    "hsv_s": 0.0,
+    "hsv_v": 0.0,
 }
 if argumentation:
-    args = dict()
+    args.update({
+        "degrees": 0.0, #  [0, 5] degrees
+        "translate": 0.0, # [0, 0.1], only y axis
+        "hsv_h": 0.01, # 色相增强, 通常设置为较小值 [0.01-0.1]
+        "hsv_s": 0.3, # 饱和度增强
+        "hsv_v": 0.5, # 明度增强
+    })
     run_name = run_name + "_aug"
 
 if rect_train:

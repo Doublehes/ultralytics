@@ -78,7 +78,7 @@ def get_labels(cam_ins):
         # nus_categories = ('car', 'truck', 'trailer', 'bus', 'construction_vehicle',
         #                 'bicycle', 'motorcycle', 'pedestrian', 'traffic_cone',
         #                 'barrier')
-        if label not in [0, 1, 2, 3, 4, 5, 6, 7]:
+        if label not in [0, 1, 2, 3, 4, 7]:
             continue
         if not instance["bbox_3d_isvalid"]:
             continue
@@ -111,16 +111,18 @@ def calc_coverage(bbox1, bbox2):
     
     return coverage, boxAArea, boxBArea
 
-def filter(labels: list):
+def filter(labels: list, cover_thrs=0.5, dist_thrs=60):
     """
     @pram labels: list of labels, each label is a list of [class_id, x, y, w, h, cx, cy, cz, cw, ch, cl, cyaw]
+    @param cover_thrs: the threshold of coverage
+    @param dist_thrs: the threshold of distance
     """
     if len(labels) == 0:
         return []
     labels = np.array(labels)
     dist = np.linalg.norm(labels[:, 5:7], axis=1)
     labels = np.concatenate((labels, dist.reshape(-1, 1)), axis=1).tolist()
-    labels = [x for x in labels if x[-1] < 60]
+    labels = [x for x in labels if x[-1] < dist_thrs]
     if len(labels) == 0:
         return []
     labels.sort(key=lambda x: x[-1])
@@ -142,7 +144,7 @@ def filter(labels: list):
         for j in range(i + 1, len(labels)):
             if j in passed:
                 continue
-            if coverage[i, j] > 0.5 and area[j] < area[i]:
+            if coverage[i, j] > cover_thrs and area[j] < area[i]:
                 passed.append(j)
 
     return selected
@@ -152,7 +154,8 @@ def filter(labels: list):
 def main(pkl_path, save_dir, sample_num=100, only_show=True, only_label_2d=True):
 
     root_path = "/media/double/Data1/datasets/nuScenese"
-    cam = "CAM_FRONT"
+    # cam = "CAM_FRONT"
+    cam = "CAM_BACK"
     save_dir = os.path.join(root_path, save_dir)
     img_dir = os.path.join(save_dir, "images")
     label_dir = os.path.join(save_dir, "labels")
@@ -160,17 +163,18 @@ def main(pkl_path, save_dir, sample_num=100, only_show=True, only_label_2d=True)
         print(f"警告: 输出目录 {save_dir} 已存在，将覆盖其中的内容。")
         os.system(f"rm -rf {save_dir}")
 
-    os.makedirs(img_dir)
-    os.makedirs(label_dir)
+    os.makedirs(img_dir, exist_ok=True)
+    os.makedirs(label_dir, exist_ok=True)
 
     with open(pkl_path, "rb") as f:
         train_infos = pickle.load(f)
     metainfo = train_infos["metainfo"]
-    datalist = train_infos["data_list"]
+    datalist = train_infos["data_list"][::2]
     print(metainfo)
     print(f"============ sample num: {len(datalist)} ============")
 
-    datalist = random.sample(datalist, sample_num)
+    if sample_num > 0:
+        datalist = random.sample(datalist, sample_num)
     process_bar = tqdm(total=len(datalist))
     for i, data in enumerate(datalist):
         img_path = data["images"][cam]["img_path"]
@@ -178,15 +182,16 @@ def main(pkl_path, save_dir, sample_num=100, only_show=True, only_label_2d=True)
         cam_ins = data["cam_instances"][cam]
 
         label_info = get_labels(cam_ins)
-        label_info = filter(label_info)
+        label_info = filter(label_info, cover_thrs=0.5, dist_thrs=80)
         if only_show:
             show(img_path, label_info)
             continue
-
-        img_new_path = os.path.join(img_dir, f"{i}.jpg")
+        
+        img_name = os.path.basename(img_path).split(".")[0]
+        img_new_path = os.path.join(img_dir, f"{img_name}.jpg")
         shutil.copy(img_path, img_new_path)
 
-        label_path = os.path.join(label_dir, f"{i}.txt")
+        label_path = os.path.join(label_dir, f"{img_name}.txt")
         with open(label_path, "w") as f:
             for label in label_info:
                 if only_label_2d:
@@ -196,13 +201,13 @@ def main(pkl_path, save_dir, sample_num=100, only_show=True, only_label_2d=True)
         process_bar.update(1)
 
 if __name__ == '__main__':
-    only_show = True
+    only_show = False
     train_pkl = "/media/double/Data1/datasets/nuScenese/nuscenes_infos_train.pkl"
-    train_dir = "yolo_dataset/train3d_new"
-    main(train_pkl, train_dir, 10000, only_show=only_show, only_label_2d=False)
+    train_dir = "yolo_dataset/train3d_all"
+    main(train_pkl, train_dir, -1, only_show=only_show, only_label_2d=False)
 
-    # val_pkl = "/media/double/Data/datasets/nuScenese/nuscenes_infos_val.pkl"
-    # val_dir = "yolo_dataset/val3d"
-    # main(val_pkl, val_dir, 500, only_show=only_show, only_label_2d=False)
+    val_pkl = "/media/double/Data1/datasets/nuScenese/nuscenes_infos_val.pkl"
+    val_dir = "yolo_dataset/val3d_all"
+    main(val_pkl, val_dir, -1, only_show=only_show, only_label_2d=False)
     pass
 
