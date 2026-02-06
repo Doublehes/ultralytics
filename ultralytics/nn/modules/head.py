@@ -181,16 +181,26 @@ class Detect3d(Detect):
         self.cv_xy = nn.ModuleList(
             nn.Sequential(Conv(x, c_xy, 3), Conv(c_xy, c_xy, 3), nn.Conv2d(c_xy, 2, 1)) for x in ch
         )
+        c_whl = max(ch[0] // 4, 3)
+        self.cv_whl = nn.ModuleList(
+            nn.Sequential(Conv(x, c_whl, 3), Conv(c_whl, c_whl, 3), nn.Conv2d(c_whl, 3, 1)) for x in ch
+        )
+        c_yaw = max(ch[0] // 4, 2)
+        self.cv_yaw = nn.ModuleList(
+            nn.Sequential(Conv(x, c_yaw, 3), Conv(c_yaw, c_yaw, 3), nn.Conv2d(c_yaw, 2, 1), nn.Sigmoid()) for x in ch
+        )
     
     def forward(self, x):
         """Concatenates and returns predicted bounding boxes and class probabilities."""        
         bs = x[0].shape[0]  # batch size
         xy = torch.cat([self.cv_xy[i](x[i]).view(bs, 2, -1) for i in range(self.nl)], 2)  # xy
+        whl = torch.cat([self.cv_whl[i](x[i]).view(bs, 3, -1) for i in range(self.nl)], 2) # whl
+        yaw = torch.cat([self.cv_yaw[i](x[i]).view(bs, 2, -1) for i in range(self.nl)], 2) # yaw
         forward_2d = super().forward(x)
         if self.training:
-            return forward_2d, xy
+            return forward_2d, xy, whl, yaw
         
-        return forward_2d, xy
+        return forward_2d, xy, whl, yaw
 
 
 class Segment(Detect):

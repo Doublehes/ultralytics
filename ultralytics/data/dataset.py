@@ -703,7 +703,7 @@ class YOLODet3dDataset(BaseDataset):
             value = values[i]
             if k == "img":
                 value = torch.stack(value, 0)
-            if k in {"bboxes", "cls", "xyz_3d"}:
+            if k in {"bboxes", "cls", "xyz_3d", "whl_3d", "yaw_3d"}:
                 value = torch.cat(value, 0)
             new_batch[k] = value
         new_batch["batch_idx"] = list(new_batch["batch_idx"])

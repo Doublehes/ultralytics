@@ -2260,6 +2260,8 @@ class Format:
 class FormatDet3d(Format):
     def __call__(self, labels):
         labels["xyz_3d"] = torch.from_numpy(labels.pop("xyz_3d"))
+        labels["whl_3d"] = torch.from_numpy(labels.pop("whl_3d"))
+        labels["yaw_3d"] = torch.from_numpy(labels.pop("yaw_3d"))
         return super().__call__(labels)
 
 

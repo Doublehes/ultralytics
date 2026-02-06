@@ -313,9 +313,9 @@ class Detection3DLoss:
 
     def __call__(self, preds, batch):
         """Calculate the sum of the loss for box, cls and dfl multiplied by batch size."""
-        loss = torch.zeros(5, device=self.device)  # box, cls, dfl, x_3d, y_3d
+        loss = torch.zeros(7, device=self.device)  # box, cls, dfl, x_3d, y_3d, whl_3d, yaw_3d
         # import pudb;pudb.set_trace()
-        pred_2d, pred_xy3d = preds[0], preds[1]
+        pred_2d, pred_xy3d, pred_whl3d, pred_yaw3d = preds[0], preds[1], preds[2], preds[3]
         feats = pred_2d[1] if isinstance(pred_2d, tuple) else pred_2d
         pred_distri, pred_scores = torch.cat([xi.view(feats[0].shape[0], self.no, -1) for xi in feats], 2).split(
             (self.reg_max * 4, self.nc), 1
@@ -324,6 +324,8 @@ class Detection3DLoss:
         pred_scores = pred_scores.permute(0, 2, 1).contiguous()
         pred_distri = pred_distri.permute(0, 2, 1).contiguous()
         pred_xy3d = pred_xy3d.permute(0, 2, 1).contiguous()
+        pred_whl3d = pred_whl3d.permute(0, 2, 1).contiguous()
+        pred_yaw3d = pred_yaw3d.permute(0, 2, 1).contiguous()
 
         dtype = pred_scores.dtype
         batch_size = pred_scores.shape[0]
@@ -332,10 +334,16 @@ class Detection3DLoss:
 
         # Targets
         targets = torch.cat(
-            (batch["batch_idx"].view(-1, 1), batch["cls"].view(-1, 1), batch["bboxes"], batch["xyz_3d"]), 1)
+            (batch["batch_idx"].view(-1, 1),
+             batch["cls"].view(-1, 1),
+             batch["bboxes"], 
+             batch["xyz_3d"],
+             batch["whl_3d"],
+             batch["yaw_3d"],
+             ), 1)
 
         targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
-        gt_labels, gt_bboxes, gt_xyz_3d = targets.split((1, 4, 3), 2)  # cls, xyxy, xyz_3d
+        gt_labels, gt_bboxes, gt_xyz_3d, gt_whl_3d, gt_yaw_3d = targets.split((1, 4, 3, 3, 1), 2)  # cls, xyxy, xyz_3d, whl_3d, yaw_3d
         mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0.0)
 
         # Pboxes
@@ -352,7 +360,7 @@ class Detection3DLoss:
             gt_labels,
             gt_bboxes,
             mask_gt,
-            dict(xyz_3d=gt_xyz_3d)
+            dict(xyz_3d=gt_xyz_3d, whl_3d=gt_whl_3d, yaw_3d=gt_yaw_3d)
         )
 
         target_scores_sum = max(target_scores.sum(), 1)
@@ -374,9 +382,19 @@ class Detection3DLoss:
             loss_3d_xy = F.smooth_l1_loss(pred_xy[valid_mask], target_xy[valid_mask], reduction="none")
             # import pudb;pudb.set_trace()
             loss_3d_xy = loss_3d_xy.sum(axis=0) / target_scores_sum
-            # loss_3d_xy *= 0.1
             loss[3] = loss_3d_xy[0] * 0.2
             loss[4] = loss_3d_xy[1] * 0.5
+
+            pred_whl = pred_whl3d[fg_mask][valid_mask]
+            target_whl = target_3ds["whl_3d"][fg_mask][valid_mask]
+            loss_3d_whl = F.smooth_l1_loss(pred_whl, target_whl, reduction="mean")
+            loss[5] = loss_3d_whl
+
+            pred_yaw = pred_yaw3d[fg_mask][valid_mask]
+            target_yaw = target_3ds["yaw_3d"][fg_mask][valid_mask]
+            target_yaw_sin_cos = torch.cat([torch.sin(target_yaw), torch.cos(target_yaw)], dim=1)
+            loss_3d_yaw = F.smooth_l1_loss(pred_yaw, target_yaw_sin_cos, reduction="mean")
+            loss[6] = loss_3d_yaw * 5.0
 
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.cls  # cls gain

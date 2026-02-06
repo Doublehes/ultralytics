@@ -51,7 +51,7 @@ class Detection3DValidator(BaseValidator):
         """Preprocesses batch of images for YOLO training."""
         batch["img"] = batch["img"].to(self.device, non_blocking=True)
         batch["img"] = (batch["img"].half() if self.args.half else batch["img"].float()) / 255
-        for k in ["batch_idx", "cls", "bboxes", "xyz_3d"]:
+        for k in ["batch_idx", "cls", "bboxes", "xyz_3d", "whl_3d", "yaw_3d"]:
             batch[k] = batch[k].to(self.device)
 
         if self.args.save_hybrid:
