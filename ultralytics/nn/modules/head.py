@@ -187,7 +187,7 @@ class Detect3d(Detect):
         )
         c_yaw = max(ch[0] // 4, 2)
         self.cv_yaw = nn.ModuleList(
-            nn.Sequential(Conv(x, c_yaw, 3), Conv(c_yaw, c_yaw, 3), nn.Conv2d(c_yaw, 2, 1), nn.Sigmoid()) for x in ch
+            nn.Sequential(Conv(x, c_yaw, 3), Conv(c_yaw, c_yaw, 3), nn.Conv2d(c_yaw, 2, 1), nn.Tanh()) for x in ch
         )
     
     def forward(self, x):
@@ -196,6 +196,7 @@ class Detect3d(Detect):
         xy = torch.cat([self.cv_xy[i](x[i]).view(bs, 2, -1) for i in range(self.nl)], 2)  # xy
         whl = torch.cat([self.cv_whl[i](x[i]).view(bs, 3, -1) for i in range(self.nl)], 2) # whl
         yaw = torch.cat([self.cv_yaw[i](x[i]).view(bs, 2, -1) for i in range(self.nl)], 2) # yaw
+        # TODO: yaw normalization
         forward_2d = super().forward(x)
         if self.training:
             return forward_2d, xy, whl, yaw

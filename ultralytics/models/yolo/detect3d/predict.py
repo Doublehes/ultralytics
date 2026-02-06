@@ -72,7 +72,7 @@ class Detection3DPredictor(BasePredictor):
         # Checks
         assert 0 <= conf_thres <= 1, f"Invalid Confidence threshold {conf_thres}, valid values are between 0.0 and 1.0"
         assert 0 <= iou_thres <= 1, f"Invalid IoU {iou_thres}, valid values are between 0.0 and 1.0"
-        pred_2d, pred_3d = prediction
+        pred_2d, pred_3d_xy, pred_3d_whl, pred_3d_yaw = prediction
         if isinstance(pred_2d, (list, tuple)):  # YOLOv8 model in validation model, output = (inference_out, loss_out)
             prediction = pred_2d[0]  # select only inference output
 
@@ -81,7 +81,11 @@ class Detection3DPredictor(BasePredictor):
         xc = prediction[:, 4:].amax(1) > conf_thres  # candidates
 
         prediction = prediction.transpose(-1, -2)  # shape(1,84,6300) to shape(1,6300,84)
-        pred_3d = pred_3d.transpose(-1, -2)
+        pred_3d_xy = pred_3d_xy.transpose(-1, -2)  # shape(1,2,6300) to shape(1,6300,2)
+        pred_3d_whl = pred_3d_whl.transpose(-1, -2)
+        pred_3d_yaw = pred_3d_yaw.transpose(-1, -2)
+        pred_3d = torch.cat((pred_3d_xy, pred_3d_whl, pred_3d_yaw), dim=-1)  # shape(1,6300,7)
+
         if in_place:
             prediction[..., :4] = xywh2xyxy(prediction[..., :4])  # xywh to xyxy
         else:
@@ -92,6 +96,7 @@ class Detection3DPredictor(BasePredictor):
         for xi, x in enumerate(prediction):  # image index, image inference
             x = x[xc[xi]]  # confidence
             x_3d = pred_3d[xi][xc[xi]]
+
 
             # Detections matrix nx6 (xyxy, conf, cls)
             box, cls = x.split((4, nc), 1)

@@ -6,6 +6,34 @@ import numpy as np
 from utils.bev_visualizer import Visualizer
 
 
+def resize_with_padding(image, target_size=(256, 128)):
+    """
+    将图像保持比例地resize并填充到目标尺寸
+    target_size: (width, height)
+    """
+    h, w = image.shape[:2]
+    target_w, target_h = target_size
+
+    # 计算缩放比例
+    scale = min(target_w / w, target_h / h)
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+
+    # 缩放图像
+    resized = cv2.resize(image, (new_w, new_h))
+
+    # 创建目标画布，用均值颜色填充
+    mean_color = np.mean(image, axis=(0, 1)).astype(np.uint8)
+    padded = np.full((target_h, target_w, 3), mean_color, dtype=np.uint8)
+
+    # 将缩放后的图像放在中心
+    y_offset = (target_h - new_h) // 2
+    x_offset = (target_w - new_w) // 2
+    padded[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+
+    return padded
+
+
 def data_iterator(data_dir):
     img_dir = os.path.join(data_dir, "images")
     img_names = os.listdir(img_dir)
@@ -27,44 +55,39 @@ def data_iterator(data_dir):
 
 
 if __name__ == "__main__":
-    # pt = "runs/train_nuscenese-3d-new_test/yolo11n-3d_nuscenese-3d-new_bs8_ep50_sz1600p_rect_wx0.2_wy0.5/weights/best.pt"
-    # pt = "runs/train_nuscenese-3d-new_test/yolo11m-3d_nuscenese-3d-new_bs8_ep50_sz960p_rect_wx0.2_wy0.5/weights/best.pt"
-    # pt = "runs/train_nuscenese-3d-new_test/yolo11n-3d_nuscenese-3d-new_bs8_ep50_sz960p_rect_wx0.2_wy0.5/weights/best.pt"
-    pt = "yolo11m-3d_nuscenese-3d-new_bs8_ep50_sz960p_rect_wx0.2_wy0.5_100002.pt"
+    pt = "runs/train_nuscenese-3d-new/yolo11n-3d_nuscenese-3d-new_bs8_ep50_sz960p_rect_wx0.2_wy0.54/weights/best.pt"
     model = YOLO(pt, task="detect3d")
 
-    # data_dir = "/home/double/Documents/BEVDet/data/nuScenese/yolo_dataset/nuscenes_data3d_all/val3d"
+    data_dir = "/home/double/Documents/BEVDet/data/nuScenese/yolo_dataset/nuscenes_data3d_all/val3d"
     # data_dir = "/home/double/Documents/BEVDet/data/nuScenese/yolo_dataset/data3d_new/val3d"
     # data_dir = "/home/double/Documents/data/bag_data/als_tms3/als_tracking/cross/test_mid_f"
     # data_dir = "/home/double/Documents/data/bag_data/als_tms3/als_tracking/same/test_mid_f"
     # data_dir = "/home/double/Documents/data/bag_data/als_tms3/als_tracking/opposite/test_mid_f"
-    data_dir = "/home/double/Documents/data/bag_data/als_tms3/extract_f600/test_mid_f"
+    # data_dir = "/home/double/Documents/data/bag_data/als_tms3/extract_f600/test_mid_f"
+    # data_dir = "/home/double/Documents/data/bag_data/als_tms3/extract_f300/test_mid_f"
     iterator = data_iterator(data_dir)
     infer_size = 960
     show_size = 960
-    conf_thrs = 0.7
+    conf_thrs = 0.4
     visualizer = Visualizer(img_width=1600, img_height=900)
     cv2.namedWindow('imgshow', cv2.WINDOW_NORMAL)
     cv2.resizeWindow('imgshow', show_size, int(show_size*1.2))
     while True:
         img, label = next(iterator)
+        # img = resize_with_padding(img, target_size=(infer_size, infer_size))
         img_h, img_w = img.shape[0], img.shape[1]
-        result = model.predict(img, verbose=True, imgsz=infer_size, conf=conf_thrs, show=True)[0]
+        result = model.predict(img, verbose=True, imgsz=infer_size, conf=conf_thrs, show=False)[0]
         result_3d = result.result_3d.cpu().numpy() # (N, 8): l, t, r, b, conf, cls, x, y
         # result_3d[:, :4] *= img_w / infer_size
 
         boxes_3d = []
         for i, box in enumerate(result_3d):
-            l, t, r, b, conf, cls, x, y = box
+            l, t, r, b, conf, cls, x, y, width, height, length, s_yaw, c_yaw = box
             cv2.rectangle(img, (int(l), int(t)), (int(r), int(b)), (255, 0, 0), 2)
             cv2.putText(img, f"{i}", (int(l), int(t) - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 2)
-            if int(cls) == 0:
-                length, width, yaw = 4, 2, 0
-            elif int(cls) == 1:
-                length, width, yaw = 1, 1, 0
-            else:
-                raise ValueError("Invalid class.")
+
+            yaw = np.arctan2(s_yaw, c_yaw)
             boxes_3d.append([i, x, y, length, width, yaw])
 
         img_bev = visualizer.generate_blank_img_3d()
