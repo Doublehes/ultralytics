@@ -35,6 +35,7 @@ class Detection3DPredictor(BasePredictor):
         results = []
         for pred, pred_3d, orig_img, img_path in zip(preds, preds_3d, orig_imgs, self.batch[0]):
             pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
+            pred_3d[:, :4] = ops.scale_boxes(img.shape[2:], pred_3d[:, :4], orig_img.shape)
             results.append(Results(orig_img, path=img_path, names=self.model.names, boxes=pred, result_3d=pred_3d))
         return results
 

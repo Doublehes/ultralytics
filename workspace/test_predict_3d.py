@@ -6,17 +6,17 @@ import numpy as np
 from utils.bev_visualizer import Visualizer
 
 
-def data_iterator(data_dir, with_label=True):
+def data_iterator(data_dir):
     img_dir = os.path.join(data_dir, "images")
     img_names = os.listdir(img_dir)
     img_names.sort()
     for img_name in img_names:
         img_path = os.path.join(img_dir, img_name)
         img = cv2.imread(img_path)
-        if not with_label:
+        label_path = img_path.replace("images", "labels").replace("jpg", "txt")
+        if not os.path.exists(label_path):
             yield img, None
             continue
-        label_path = img_path.replace("images", "labels").replace("jpg", "txt")
         label = np.loadtxt(label_path)
         if len(label) == 0:
             label = np.array([])
@@ -27,30 +27,31 @@ def data_iterator(data_dir, with_label=True):
 
 
 if __name__ == "__main__":
-    pt = "runs/train_nuscenese-3d-new_test/yolo11n-3d_nuscenese-3d-new_bs8_ep50_sz1600p_rect_wx0.2_wy0.5/weights/best.pt"
+    # pt = "runs/train_nuscenese-3d-new_test/yolo11n-3d_nuscenese-3d-new_bs8_ep50_sz1600p_rect_wx0.2_wy0.5/weights/best.pt"
     # pt = "runs/train_nuscenese-3d-new_test/yolo11m-3d_nuscenese-3d-new_bs8_ep50_sz960p_rect_wx0.2_wy0.5/weights/best.pt"
     # pt = "runs/train_nuscenese-3d-new_test/yolo11n-3d_nuscenese-3d-new_bs8_ep50_sz960p_rect_wx0.2_wy0.5/weights/best.pt"
-    # pt = "runs/train_nuscenese-3d-new_test/yolo11n-3d_nuscenese-3d-new_bs8_ep100_sz960p_rect_wx0.2_wy0.5_100004/weights/best.pt"
+    pt = "yolo11m-3d_nuscenese-3d-new_bs8_ep50_sz960p_rect_wx0.2_wy0.5_100002.pt"
     model = YOLO(pt, task="detect3d")
 
-    # data_dir = "/home/double/Documents/BEVDet/data/nuScenese/yolo_dataset/val3d"
-    data_dir = "/home/double/Documents/BEVDet/data/nuScenese/yolo_dataset/data3d_new/val3d"
+    # data_dir = "/home/double/Documents/BEVDet/data/nuScenese/yolo_dataset/nuscenes_data3d_all/val3d"
+    # data_dir = "/home/double/Documents/BEVDet/data/nuScenese/yolo_dataset/data3d_new/val3d"
     # data_dir = "/home/double/Documents/data/bag_data/als_tms3/als_tracking/cross/test_mid_f"
     # data_dir = "/home/double/Documents/data/bag_data/als_tms3/als_tracking/same/test_mid_f"
     # data_dir = "/home/double/Documents/data/bag_data/als_tms3/als_tracking/opposite/test_mid_f"
-    # data_dir = "/home/double/Documents/data/bag_data/als_tms3/extract_f600/test_mid_f"
-    iterator = data_iterator(data_dir, with_label=True)
-    orig_size = 1600
+    data_dir = "/home/double/Documents/data/bag_data/als_tms3/extract_f600/test_mid_f"
+    iterator = data_iterator(data_dir)
     infer_size = 960
-    infer_size = 1600
+    show_size = 960
+    conf_thrs = 0.7
     visualizer = Visualizer(img_width=1600, img_height=900)
+    cv2.namedWindow('imgshow', cv2.WINDOW_NORMAL)
+    cv2.resizeWindow('imgshow', show_size, int(show_size*1.2))
     while True:
         img, label = next(iterator)
-        # img = cv2.resize(img, (1600, 928))
-        # import pudb; pudb.set_trace()
-        result = model.predict(img, verbose=True, imgsz=infer_size, conf=0.6)[0]
+        img_h, img_w = img.shape[0], img.shape[1]
+        result = model.predict(img, verbose=True, imgsz=infer_size, conf=conf_thrs, show=True)[0]
         result_3d = result.result_3d.cpu().numpy() # (N, 8): l, t, r, b, conf, cls, x, y
-        result_3d[:, :4] *= orig_size / infer_size
+        # result_3d[:, :4] *= img_w / infer_size
 
         boxes_3d = []
         for i, box in enumerate(result_3d):
@@ -84,10 +85,10 @@ if __name__ == "__main__":
                 boxes_3d_gt.append([i, x, y, length, width, yaw])
             visualizer.draw_3d_bboxes(img_bev, boxes_3d_gt, color=visualizer.green_color)
 
+        img = cv2.resize(img, (show_size, img_h * show_size // img_w))
+        img_bev = cv2.resize(img_bev, (show_size, img_bev.shape[0] * show_size // img_bev.shape[1]))
         img_concat = np.concatenate([img, img_bev], axis=0)
         
-        cv2.namedWindow('imgshow', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('imgshow', 1400, 1400) 
         cv2.imshow('imgshow', img_concat)
         cv2.waitKey(0)
 
